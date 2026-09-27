@@ -24,7 +24,7 @@ namespace Apocapocket
     {
         public const string GUID = "com.denis.apocalypter.apocapocket";
         public const string NAME = "Apocapocket";
-        public const string VERSION = "1.0.4";
+        public const string VERSION = "1.0.5";
 
         internal static ManualLogSource Log;
         internal static ConfigEntry<bool> Enabled;
@@ -46,6 +46,8 @@ namespace Apocapocket
             Verbose = Config.Bind("General", "VerboseLog", true, "Log every step to the BepInEx console/log.");
             Blacklist = Config.Bind("General", "BlacklistIDs", "PartAdjusterTools;box_cardboard;crate_metal;crate_plastic",
                 "Items that can never be pocketed, separated by ';'. Each entry matches an item's ID string (FSM 'ID') or its prefab name (e.g. crate_metal). Crates are listed because they carry other items inside.");
+            // Config files written by 1.0.3 and earlier hold the old default only; upgrade them so the crates are covered.
+            if ((Blacklist.Value ?? "").Trim() == "PartAdjusterTools") { Blacklist.Value = (string)Blacklist.DefaultValue; Config.Save(); Logger.LogInfo("BlacklistIDs upgraded to the 1.0.4 default: " + Blacklist.Value); }
             DefaultX = Config.Bind("HandPose", "DefaultX", 0f, new ConfigDescription("Default hand offset X for items loaded from a save (no remembered pose).", new AcceptableValueRange<float>(-2f, 2f)));
             DefaultY = Config.Bind("HandPose", "DefaultY", 0f, new ConfigDescription("Default hand offset Y.", new AcceptableValueRange<float>(-2f, 2f)));
             DefaultZ = Config.Bind("HandPose", "DefaultZ", 0f, new ConfigDescription("Default hand offset Z (forward).", new AcceptableValueRange<float>(-2f, 3f)));
