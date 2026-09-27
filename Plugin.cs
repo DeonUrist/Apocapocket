@@ -24,7 +24,7 @@ namespace Apocapocket
     {
         public const string GUID = "com.denis.apocalypter.apocapocket";
         public const string NAME = "Apocapocket";
-        public const string VERSION = "1.0.1";
+        public const string VERSION = "1.0.3";
 
         internal static ManualLogSource Log;
         internal static ConfigEntry<bool> Enabled;
@@ -186,6 +186,25 @@ namespace Apocapocket
         }
     }
 
+    /// Vehicle parts (cassette, radio, headlight...) carry a CheckTag FSM whose start state reparents the object to the scene
+    /// root. Switching the vehicle camera deactivates PlayerCamera, and when it comes back PlayMaker restarts every FSM on the
+    /// re-enabled objects (RestartOnEnable) - so a held or pocketed vehicle part is thrown out of the hand / slot. While an
+    /// item is in our custody the restart is switched off for the FSMs whose start path has side effects.
+    internal static class RestartGuard
+    {
+        private static readonly string[] Fsms = { "CheckTag", "LockPhysics" };
+
+        internal static void Set(GameObject item, bool guarded)
+        {
+            if (item == null) return;
+            foreach (var f in item.GetComponents<PlayMakerFSM>())
+            {
+                if (f == null || f.Fsm == null || Array.IndexOf(Fsms, f.FsmName) < 0) continue;
+                f.Fsm.RestartOnEnable = !guarded;
+            }
+        }
+    }
+
     internal class StoredItem
     {
         public GameObject Item;
@@ -230,6 +249,8 @@ namespace Apocapocket
                 return;
             }
 
+            GuardHeld();
+
             // Forget the "came from slot" record once the item left the hand (dropped / thrown / stored).
             if (_heldItem != null && HeldItem() != _heldItem)
             {
@@ -238,7 +259,12 @@ namespace Apocapocket
                 _heldItem = null; _heldFrom = -1;
             }
 
-            if (!GameplayActive()) return;
+            if (!GameplayActive())
+            {
+                if (_thirdReason != null && (ButtonDown("Weapon 1", Plugin.Fallback1.Value) || ButtonDown("Weapon 2", Plugin.Fallback2.Value) || ButtonDown("Weapon 3", Plugin.Fallback3.Value)))
+                    Plugin.V("Slot key ignored: third person (" + _thirdReason + ")");
+                return;
+            }
 
             int n = -1;
             if (ButtonDown("Weapon 1", Plugin.Fallback1.Value)) n = 0;
@@ -250,6 +276,19 @@ namespace Apocapocket
             if (n == 3) { if (WantsOff()) { Plugin.HandledFrame = Time.frameCount; OnWeaponOff(); } return; }
             if (WantsSlot(n)) { Plugin.HandledFrame = Time.frameCount; OnSlotKey(n); }
         }
+
+        private GameObject _guardedHeld;
+        /// Any item in the hand (from a slot or picked up by hand) keeps its FSMs from restarting on the camera toggle.
+        private void GuardHeld()
+        {
+            var h = HeldItem();
+            if (h == _guardedHeld) return;
+            if (_guardedHeld != null && !IsPocketed(_guardedHeld)) RestartGuard.Set(_guardedHeld, false);
+            _guardedHeld = h;
+            if (h != null) { RestartGuard.Set(h, true); Plugin.V("Restart guard on " + h.name); }
+        }
+
+        private bool IsPocketed(GameObject go) { for (int i = 0; i < 3; i++) if (_stored[i] != null && _stored[i].Item == go) return true; return false; }
 
         // -------------------------------------------------------------- decision (shared with the Harmony prefix)
         internal static Runner Instance;
@@ -264,7 +303,8 @@ namespace Apocapocket
         {
             var held = HeldItem();
             var slotItem = SlotItem(n);
-            Plugin.V("Key slot " + (n + 1) + ": held=" + Name(held) + " from=" + (_heldFrom + 1) + " slotItem=" + Name(slotItem) + " slotChild=" + Name(SlotChild(n)));
+            Plugin.V("Key slot " + (n + 1) + ": held=" + Name(held) + " from=" + (_heldFrom + 1) + " slotItem=" + Name(slotItem) + " slotChild=" + Name(SlotChild(n))
+                + (_r.InCar != null ? " InCar=" + _r.InCar.ActiveStateName : "") + " vehicleCam=" + (_vehicleCam != null && _vehicleCam.enabled ? _vehicleCam.ActiveStateName : "none") + " main=" + (Camera.main != null ? Camera.main.name : "null"));
 
             if (held != null)
             {
@@ -407,6 +447,7 @@ namespace Apocapocket
             SetFsmEnabled(item, "Attach", true);
             SetFsmEnabled(item, "CheckBool", true);
 
+            RestartGuard.Set(item, true);
             var itemVar = _r.Grab.FsmVariables.GetFsmGameObject("Item");
             if (itemVar != null) itemVar.Value = item;
             var nameVar = _r.Grab.FsmVariables.GetFsmString("ItemInHandName");
@@ -607,6 +648,7 @@ namespace Apocapocket
         /// hide=true disables every renderer/collider; hide=false re-enables only those recorded in `rec` (all if unknown).
         private static void Hide(GameObject item, bool hide, StoredItem rec)
         {
+            RestartGuard.Set(item, hide);
             if (hide)
             {
                 foreach (var r in item.GetComponentsInChildren<Renderer>(true)) r.enabled = false;
@@ -643,18 +685,34 @@ namespace Apocapocket
         private PlayMakerFSM _vehicleCam;
         private float _nextCamScan;
 
-        /// True while a vehicle's DriveTrigger [Camera] FSM (enabled only while driving) is in its "3rd" state.
+        /// Third person exists only in vehicles (DriveTrigger [Camera] FSM, states 1st/3rd). Checked only while Player/InCar
+        /// says we are in a vehicle, so on-foot behaviour never depends on it. Several independent signals, any one is enough.
+        private string _thirdReason;
         private bool ThirdPerson()
         {
+            _thirdReason = null;
             if (_r.InCar != null && _r.InCar.ActiveStateName == "OnFoot") { _vehicleCam = null; return false; }
+            if (_r.InCar == null) return false;
+            // 1) the vehicle camera FSM (enabled only while driving) in its "3rd" state
             if ((_vehicleCam == null || !_vehicleCam.enabled) && Time.unscaledTime >= _nextCamScan)
             {
                 _nextCamScan = Time.unscaledTime + 0.5f;
                 _vehicleCam = null;
                 foreach (var f in Resources.FindObjectsOfTypeAll<PlayMakerFSM>())
-                    if (f != null && f.enabled && f.FsmName == "Camera" && f.gameObject.name == "DriveTrigger" && f.gameObject.scene.IsValid()) { _vehicleCam = f; break; }
+                    if (f != null && f.enabled && f.FsmName == "Camera" && f.gameObject.name == "DriveTrigger" && f.gameObject.scene.IsValid() && f.gameObject.activeInHierarchy) { _vehicleCam = f; break; }
             }
-            return _vehicleCam != null && _vehicleCam.enabled && _vehicleCam.ActiveStateName == "3rd";
+            if (_vehicleCam != null && _vehicleCam.enabled)
+            {
+                string st = _vehicleCam.ActiveStateName;
+                if (st == "3rd" || st.StartsWith("3")) { _thirdReason = "vehicle Camera FSM state '" + st + "'"; return true; }
+            }
+            // 2) the player camera is not the one rendering (the 3rd-person camera is a different object)
+            var pc = _r.Grab.GetComponent<Camera>();
+            if (pc != null && !pc.isActiveAndEnabled) { _thirdReason = "PlayerCamera's Camera is disabled"; return true; }
+            if (!_r.Grab.gameObject.activeInHierarchy) { _thirdReason = "PlayerCamera is inactive"; return true; }
+            var main = Camera.main;
+            if (main != null && main.gameObject != _r.Grab.gameObject && !main.transform.IsChildOf(_r.Grab.transform)) { _thirdReason = "Camera.main is " + GetPath(main.gameObject); return true; }
+            return false;
         }
 
         private bool GameplayActive()
