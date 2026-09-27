@@ -24,7 +24,7 @@ namespace Apocapocket
     {
         public const string GUID = "com.denis.apocalypter.apocapocket";
         public const string NAME = "Apocapocket";
-        public const string VERSION = "1.0.3";
+        public const string VERSION = "1.0.4";
 
         internal static ManualLogSource Log;
         internal static ConfigEntry<bool> Enabled;
@@ -44,7 +44,8 @@ namespace Apocapocket
             Config.Bind("General", "Apocasetter", true, "Show this mod in the Apocasetter Mods menu");
             Enabled = Config.Bind("General", "Enabled", true, "Enable item slots. When disabled the weapon keys behave exactly as before.");
             Verbose = Config.Bind("General", "VerboseLog", true, "Log every step to the BepInEx console/log.");
-            Blacklist = Config.Bind("General", "BlacklistIDs", "PartAdjusterTools", "Item ID strings (FSM 'ID') that can never be pocketed, separated by ';'.");
+            Blacklist = Config.Bind("General", "BlacklistIDs", "PartAdjusterTools;box_cardboard;crate_metal;crate_plastic",
+                "Items that can never be pocketed, separated by ';'. Each entry matches an item's ID string (FSM 'ID') or its prefab name (e.g. crate_metal). Crates are listed because they carry other items inside.");
             DefaultX = Config.Bind("HandPose", "DefaultX", 0f, new ConfigDescription("Default hand offset X for items loaded from a save (no remembered pose).", new AcceptableValueRange<float>(-2f, 2f)));
             DefaultY = Config.Bind("HandPose", "DefaultY", 0f, new ConfigDescription("Default hand offset Y.", new AcceptableValueRange<float>(-2f, 2f)));
             DefaultZ = Config.Bind("HandPose", "DefaultZ", 0f, new ConfigDescription("Default hand offset Z (forward).", new AcceptableValueRange<float>(-2f, 3f)));
@@ -635,8 +636,14 @@ namespace Apocapocket
             var id = Fsms.Find(item, "ID");
             string idv = null;
             if (id != null) { var s = id.FsmVariables.GetFsmString("ID"); if (s != null) idv = s.Value; }
-            if (!string.IsNullOrEmpty(idv))
-                foreach (var b in (Plugin.Blacklist.Value ?? "").Split(';')) if (b.Trim() == idv) { Plugin.Log.LogInfo(Name(item) + " cannot be pocketed (blacklisted ID " + idv + ")"); return false; }
+            string prefab = Icons.PrefabName(item);
+            foreach (var raw in (Plugin.Blacklist.Value ?? "").Split(';'))
+            {
+                var b = raw.Trim();
+                if (b.Length == 0) continue;
+                if (string.Equals(b, prefab, StringComparison.OrdinalIgnoreCase) || (!string.IsNullOrEmpty(idv) && b == idv))
+                { Plugin.Log.LogInfo(Name(item) + " cannot be pocketed (blacklisted: " + b + ")"); return false; }
+            }
             // Merchant stock (ForBuy.ForBuyInt == 1) is bought with Use, never pocketed.
             var fb = Fsms.Find(item, "ForBuy");
             if (fb != null) { var v = fb.FsmVariables.GetFsmInt("ForBuyInt"); if (v != null && v.Value == 1) { Plugin.Log.LogInfo(Name(item) + " is merchant stock; not pocketing"); return false; } }

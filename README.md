@@ -27,7 +27,7 @@ Config: `BepInEx\config\com.denis.apocalypter.apocapocket.cfg`
 | Section / key | Default | Description |
 | --- | --- | --- |
 | `[General] Enabled` | `true` | Turn item slots on/off (off = pocketed items are ejected) |
-| `[General] BlacklistIDs` | `PartAdjusterTools` | Item `ID` strings that can never be pocketed (`;`-separated) |
+| `[General] BlacklistIDs` | `PartAdjusterTools;box_cardboard;crate_metal;crate_plastic` | Items that can never be pocketed, by `ID` string or prefab name (`;`-separated); crates carry other items |
 | `[General] IconSize` | `128` | Pixel size of the rendered slot icons |
 | `[General] VerboseLog` | `true` | Log every step |
 | `[HandPose] DefaultX/Y/Z` | `0` | Hand offset used when no pose is known |
