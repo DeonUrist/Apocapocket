@@ -24,7 +24,7 @@ namespace Apocapocket
     {
         public const string GUID = "com.denis.apocalypter.apocapocket";
         public const string NAME = "Apocapocket";
-        public const string VERSION = "1.0.0";
+        public const string VERSION = "1.0.1";
 
         internal static ManualLogSource Log;
         internal static ConfigEntry<bool> Enabled;
@@ -193,6 +193,9 @@ namespace Apocapocket
         public Quaternion LocalRot;
         public bool HasPose;
         public int Layer = 9;
+        // Renderers / colliders that were enabled when the item was pocketed (null = unknown, e.g. loaded from a save).
+        public List<Renderer> Renderers;
+        public List<Collider> Colliders;
     }
 
     internal class Runner : MonoBehaviour
@@ -220,7 +223,12 @@ namespace Apocapocket
             else if (Time.unscaledTime >= _nextScan) { _nextScan = Time.unscaledTime + 0.5f; Rescan(); }
             if (_r == null || !_r.Valid) return;
 
-            if (_steps.Count > 0) { var a = _steps.Dequeue(); try { a(); } catch (Exception e) { Plugin.Log.LogError("step failed: " + e); } return; }
+            if (_steps.Count > 0)
+            {
+                if (!GameplayActive()) return;   // never move items around while paused / in a menu (GrabItem's Grab would bail out)
+                var a = _steps.Dequeue(); try { a(); } catch (Exception e) { Plugin.Log.LogError("step failed: " + e); }
+                return;
+            }
 
             // Forget the "came from slot" record once the item left the hand (dropped / thrown / stored).
             if (_heldItem != null && HeldItem() != _heldItem)
@@ -249,6 +257,7 @@ namespace Apocapocket
 
         internal bool WantsSlot(int n) { return _r != null && _r.Valid && (HeldItem() != null || SlotItem(n) != null); }
         internal bool WantsOff() { return _r != null && _r.Valid && HeldItem() != null; }
+        internal bool SlotHoldsItem(Transform slot) { if (_r == null || !_r.Valid) return false; for (int i = 0; i < 3; i++) if (_r.Slots[i] == slot) return SlotItem(i) != null; return false; }
 
         // -------------------------------------------------------------- actions
         private void OnSlotKey(int n)
@@ -285,10 +294,12 @@ namespace Apocapocket
         /// The game's takeWeapon recipe: notHold on GrabItem, parent under the slot, hide, freeze physics.
         private bool StoreHeld(GameObject item, int n, bool emptyHands)
         {
-            if (!CanPocket(item)) { Plugin.Log.LogInfo(Name(item) + " cannot be pocketed (blacklisted)"); return false; }
+            if (!CanPocket(item)) return false;
             var slot = _r.Slots[n];
             var rec = new StoredItem { Item = item, LocalPos = item.transform.localPosition, LocalRot = item.transform.localRotation, HasPose = true, Layer = item.layer };
             if (item.transform.parent != _r.Hand) rec.HasPose = false;
+            rec.Renderers = new List<Renderer>(); foreach (var r in item.GetComponentsInChildren<Renderer>(true)) if (r != null && r.enabled) rec.Renderers.Add(r);
+            rec.Colliders = new List<Collider>(); foreach (var c in item.GetComponentsInChildren<Collider>(true)) if (c != null && c.enabled) rec.Colliders.Add(c);
 
             SetFsmEnabled(item, "Attach", false);
             SetFsmEnabled(item, "CheckBool", false);
@@ -302,6 +313,9 @@ namespace Apocapocket
             _heldItem = null; _heldFrom = -1;
             PlayClip("draw_holster", 0.3f);
             if (emptyHands) SetWeaponBools(-1);
+            // A weapon dropped with the game's Drop Weapon key leaves the Weapons FSM sitting in that slot's state (its
+            // DropWeapon/UseWeapon FSMs live) - never let that apply to a slot that now holds a pocketed item.
+            if (_r.Weapons.ActiveStateName == "Slot " + (n + 1)) { Plugin.V("Weapons FSM was still in " + _r.Weapons.ActiveStateName + " for an empty slot; sending back"); SetWeaponBools(-1); _r.Weapons.SendEvent("back"); }
             _steps.Enqueue(() => ApplyIcon(n));
             Plugin.V("Stored " + item.name + " in slot " + (n + 1));
             return true;
@@ -324,11 +338,42 @@ namespace Apocapocket
             _inTransit = item;
             bool weaponOut = _r.HandItemUse.childCount > 0;
             if (weaponOut) { Plugin.V("Holstering weapon before taking out " + item.name); _r.Weapons.SendEvent("Deactivate"); SetWeaponBools(-1); }
-            _steps.Enqueue(() =>
+            int tries = 0;
+            Action step = null;
+            step = () =>
             {
-                if (_r.HandItemUse.childCount > 0) { Plugin.Log.LogWarning("HandItemUse still occupied; retrying next frame"); _steps.Enqueue(() => Grab(item, rec, n)); return; }
+                if (_r.HandItemUse.childCount > 0 && ++tries < 10) { Plugin.V("HandItemUse still occupied; retrying (" + tries + ")"); _steps.Enqueue(step); return; }
+                if (_r.HandItemUse.childCount > 0) { Plugin.Log.LogWarning("Weapon would not holster; leaving " + item.name + " in slot " + (n + 1)); _inTransit = null; Restore(item, rec, n); return; }
                 Grab(item, rec, n);
-            });
+            };
+            _steps.Enqueue(step);
+        }
+
+        /// Put an item back into a slot as a pocketed item (used when a take-out fails).
+        private void Restore(GameObject item, StoredItem rec, int n)
+        {
+            item.transform.SetParent(_r.Slots[n], false);
+            item.transform.localPosition = Vector3.zero;
+            item.transform.localRotation = Quaternion.identity;
+            Hide(item, true);
+            _stored[n] = rec;
+            _steps.Enqueue(() => ApplyIcon(n));
+        }
+
+        /// Last resort: the item cannot go back (slot taken) - release it into the world at the drop point, visible and physical.
+        private void DropLoose(GameObject item, StoredItem rec)
+        {
+            Plugin.Log.LogWarning("Releasing " + item.name + " into the world");
+            var drop = _r.Grab.transform.Find("ItemDrop");
+            item.transform.SetParent(null, true);
+            item.transform.position = drop != null ? drop.position : _r.Grab.transform.position + _r.Grab.transform.forward;
+            item.layer = rec != null ? rec.Layer : 9;
+            Hide(item, false, rec);
+            var rb = item.GetComponent<Rigidbody>();
+            if (rb == null) rb = item.AddComponent<Rigidbody>();
+            rb.isKinematic = false; rb.useGravity = true; rb.velocity = Vector3.zero;
+            var lp = Fsms.Find(item, "LockPhysics");
+            if (lp != null) { lp.enabled = true; try { lp.SendEvent("LockPhysics_OFF"); } catch { } }
         }
 
         private void Grab(GameObject item, StoredItem rec, int n)
@@ -353,7 +398,7 @@ namespace Apocapocket
                 item.transform.rotation = Quaternion.LookRotation(_r.Grab.transform.forward, Vector3.up);
             }
             item.layer = rec.Layer;
-            Hide(item, false);
+            Hide(item, false, rec);
             var rb = item.GetComponent<Rigidbody>();
             if (rb == null) { rb = item.AddComponent<Rigidbody>(); var lp = Fsms.Find(item, "LockPhysics"); var m = lp != null ? lp.FsmVariables.GetFsmFloat("mass") : null; if (m != null && m.Value > 0) rb.mass = m.Value; }
             rb.isKinematic = false; rb.useGravity = false; rb.velocity = Vector3.zero; rb.angularVelocity = Vector3.zero;
@@ -367,6 +412,16 @@ namespace Apocapocket
             var nameVar = _r.Grab.FsmVariables.GetFsmString("ItemInHandName");
             if (nameVar != null) nameVar.Value = "";
             _r.Grab.Fsm.SetState("Grab");
+            string gs = _r.Grab.ActiveStateName;
+            if (gs != "Grab" && gs != "ItemInHand")
+            {
+                // The Grab state bailed out (weapon still out, GrabItem_Pause, ...): never leave the item dangling under the Hand.
+                Plugin.Log.LogWarning("GrabItem refused " + item.name + " (state " + gs + "); putting it back into slot " + (n + 1));
+                _inTransit = null;
+                if (n >= 0 && SlotChild(n) == null) Restore(item, rec, n);
+                else DropLoose(item, rec);
+                return;
+            }
             _heldItem = item; _heldFrom = n; _inTransit = null;
             PlayClip("draw_holster", 0.3f);
             Plugin.V((n < 0 ? "Grabbed " : "Took ") + item.name + (n < 0 ? "" : " out of slot " + (n + 1)) + " -> GrabItem state " + _r.Grab.ActiveStateName + ", hand children=" + hand.childCount + ", parent=" + Name(item.transform.parent != null ? item.transform.parent.gameObject : null) + ", pos=" + item.transform.localPosition);
@@ -384,13 +439,21 @@ namespace Apocapocket
         }
 
         // -------------------------------------------------------------- helpers
+        /// Forget everything tied to the previous world (queued steps, in-transit / held / stored records).
+        private void ResetTransient(string why)
+        {
+            if (_steps.Count > 0 || _inTransit != null || _heldItem != null) Plugin.V("Reset transient state (" + why + "): " + _steps.Count + " queued step(s) dropped");
+            _steps.Clear(); _inTransit = null; _heldItem = null; _heldFrom = -1;
+            for (int i = 0; i < 3; i++) _stored[i] = null;
+        }
+
         // ------------------------------------------------------------ eject (mod disabled)
         private void EjectAll(string why)
         {
             for (int i = 0; i < 3; i++)
             {
                 var c = SlotChild(i);
-                if (c == null || IsWeapon(c)) continue;
+                if (c == null || IsWeapon(c) || c == _inTransit) continue;
                 Plugin.Log.LogInfo("Ejecting " + c.name + " from slot " + (i + 1) + " (" + why + ")");
                 Eject(c, i);
                 _stored[i] = null;
@@ -406,7 +469,7 @@ namespace Apocapocket
             item.transform.SetParent(null, true);
             item.transform.position = pos;
             item.layer = rec != null ? rec.Layer : 9;
-            Hide(item, false);
+            Hide(item, false, rec);
             var rb = item.GetComponent<Rigidbody>();
             if (rb == null) rb = item.AddComponent<Rigidbody>();
             rb.isKinematic = false; rb.useGravity = true; rb.velocity = Vector3.zero;
@@ -418,7 +481,7 @@ namespace Apocapocket
 
         private void Rescan()
         {
-            if (_r == null || !_r.Valid) { _r = Refs.Find(); if (_r.Valid) { Icons.Slots = _r.Slots; Plugin.V("Found player refs"); } else return; }
+            if (_r == null || !_r.Valid) { _r = Refs.Find(); if (_r.Valid) { Icons.Slots = _r.Slots; Plugin.V("Found player refs"); ResetTransient("new player refs"); } else return; }
             // Items sitting in slots (loaded from a save, or stored by us): make sure they are registered and hidden.
             for (int i = 0; i < 3; i++)
             {
@@ -431,6 +494,7 @@ namespace Apocapocket
                 }
                 if (IsWeapon(c)) { _stored[i] = null; continue; }
                 if (c == _inTransit || c == _heldItem) continue;
+                if (!c.activeSelf) { if (_stored[i] == null || _stored[i].Item != c) { Plugin.Log.LogWarning("Inactive object " + c.name + " in slot " + (i + 1) + "; activating it"); c.SetActive(true); } }
                 if (_stored[i] == null || _stored[i].Item != c)
                 {
                     var rec0 = new StoredItem { Item = c, HasPose = false, Layer = 9 };
@@ -465,7 +529,7 @@ namespace Apocapocket
                 {
                     // Taken by the game's own camera-side logic (e.g. QuickItems) - that is legitimate, let it go.
                     Plugin.Log.LogWarning(rec.Item.name + " left slot " + (i + 1) + " for " + where + "; releasing it");
-                    Hide(rec.Item, false); _stored[i] = null; continue;
+                    Hide(rec.Item, false, rec); _stored[i] = null; continue;
                 }
                 Plugin.Log.LogWarning(rec.Item.name + " was moved out of slot " + (i + 1) + " (now under " + where + ", active=" + rec.Item.activeInHierarchy + "); putting it back");
                 rec.Item.transform.SetParent(_r.Slots[i], false);
@@ -531,14 +595,33 @@ namespace Apocapocket
             string idv = null;
             if (id != null) { var s = id.FsmVariables.GetFsmString("ID"); if (s != null) idv = s.Value; }
             if (!string.IsNullOrEmpty(idv))
-                foreach (var b in (Plugin.Blacklist.Value ?? "").Split(';')) if (b.Trim() == idv) return false;
+                foreach (var b in (Plugin.Blacklist.Value ?? "").Split(';')) if (b.Trim() == idv) { Plugin.Log.LogInfo(Name(item) + " cannot be pocketed (blacklisted ID " + idv + ")"); return false; }
+            // Merchant stock (ForBuy.ForBuyInt == 1) is bought with Use, never pocketed.
+            var fb = Fsms.Find(item, "ForBuy");
+            if (fb != null) { var v = fb.FsmVariables.GetFsmInt("ForBuyInt"); if (v != null && v.Value == 1) { Plugin.Log.LogInfo(Name(item) + " is merchant stock; not pocketing"); return false; } }
             return true;
         }
 
-        private static void Hide(GameObject item, bool hide)
+        private static void Hide(GameObject item, bool hide) { Hide(item, hide, null); }
+
+        /// hide=true disables every renderer/collider; hide=false re-enables only those recorded in `rec` (all if unknown).
+        private static void Hide(GameObject item, bool hide, StoredItem rec)
         {
-            foreach (var r in item.GetComponentsInChildren<Renderer>(true)) r.enabled = !hide;
-            foreach (var c in item.GetComponentsInChildren<Collider>(true)) { if (hide) { c.enabled = false; } else { c.enabled = true; } }
+            if (hide)
+            {
+                foreach (var r in item.GetComponentsInChildren<Renderer>(true)) r.enabled = false;
+                foreach (var c in item.GetComponentsInChildren<Collider>(true)) c.enabled = false;
+            }
+            else if (rec != null && rec.Renderers != null && rec.Colliders != null)
+            {
+                foreach (var r in rec.Renderers) if (r != null) r.enabled = true;
+                foreach (var c in rec.Colliders) if (c != null) c.enabled = true;
+            }
+            else
+            {
+                foreach (var r in item.GetComponentsInChildren<Renderer>(true)) r.enabled = true;
+                foreach (var c in item.GetComponentsInChildren<Collider>(true)) c.enabled = true;
+            }
             var rb = item.GetComponent<Rigidbody>();
             if (rb != null && hide) { rb.velocity = Vector3.zero; rb.angularVelocity = Vector3.zero; rb.useGravity = false; rb.isKinematic = true; }
             if (hide) SetFsmEnabled(item, "LockPhysics", false);
@@ -621,8 +704,16 @@ namespace Apocapocket
             if (!Plugin.Enabled.Value || __instance.buttonName == null) return true;
             string b = __instance.buttonName.Value;
             int n;
-            if (b == "Weapon 1") n = 0; else if (b == "Weapon 2") n = 1; else if (b == "Weapon 3") n = 2; else if (b == "Weapon off") n = 3; else return true;
             var run = Runner.Instance;
+            if (b == "Drop Weapon")
+            {
+                // Slot N's DropWeapon FSM: only block when that slot holds a pocketed item.
+                if (run == null || __instance.Fsm == null || __instance.Fsm.GameObject == null) return true;
+                if (!run.SlotHoldsItem(__instance.Fsm.GameObject.transform)) return true;
+                if (__instance.storeResult != null) __instance.storeResult.Value = false;
+                return false;
+            }
+            if (b == "Weapon 1") n = 0; else if (b == "Weapon 2") n = 1; else if (b == "Weapon 3") n = 2; else if (b == "Weapon off") n = 3; else return true;
             bool block = Time.frameCount == Plugin.HandledFrame || Time.frameCount == Plugin.HandledFrame + 1;
             if (!block && run != null) block = n == 3 ? run.WantsOff() : run.WantsSlot(n);
             if (!block) return true;
