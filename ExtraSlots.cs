@@ -83,7 +83,7 @@ namespace Apocapocket
             catch (Exception e) { _uiFailed = true; Plugin.Log.LogWarning("Extra slot UI could not be built: " + e); }
         }
 
-        internal static void ResetUi() { _uiFailed = false; _bgClone = null; _bgSource = null; for (int i = 0; i < Max; i++) { _icons[i] = null; _frames[i] = null; _outlines[i] = null; _uiRoots[i].Clear(); } }
+        internal static void ResetUi() { _uiFailed = false; _bgClone = null; _bgSource = null; _cardParts.Clear(); for (int i = 0; i < Max; i++) { _icons[i] = null; _frames[i] = null; _outlines[i] = null; _uiRoots[i].Clear(); } }
 
         private static void BuildUi(Transform slot2, Transform slot3)
         {
@@ -110,12 +110,33 @@ namespace Apocapocket
 
             if (bg != null)
             {
-                _bgSource = bg.gameObject;
-                _bgClone = UnityEngine.Object.Instantiate(bg.gameObject, bg.parent, false);
-                _bgClone.name = bg.name + "_apocapocket";
-                foreach (var f in _bgClone.GetComponentsInChildren<PlayMakerFSM>(true)) UnityEngine.Object.DestroyImmediate(f);
-                _bgClone.transform.position = bg.position - new Vector3(worldShift, 0f, 0f);
-                _bgClone.transform.SetSiblingIndex(bg.GetSiblingIndex() + 1);   // same depth: still drawn before (under) the slots
+                DumpChildren(bg.parent);
+                // The card plus every decoration drawn on it (dividers, slot squares...): siblings in the card's container whose
+                // centre lies on the card. Each copy goes right after its original, so the drawing order stays the same.
+                var parts = new List<Transform> { bg };
+                var cardRect = WorldRect(bg);
+                foreach (Transform sib in bg.parent)
+                {
+                    if (sib == bg || sib.name.EndsWith("_apocapocket") || sib == parent || parent.IsChildOf(sib)) continue;
+                    if (sib.GetComponentInChildren<Graphic>(true) == null) continue;
+                    var r = WorldRect(sib);
+                    if (r.width <= 0f || r.width * r.height >= cardRect.width * cardRect.height) continue;
+                    if (!cardRect.Contains(r.center)) continue;
+                    parts.Add(sib);
+                }
+                var ordered = new List<Transform>(parts);
+                ordered.Sort((x, y) => y.GetSiblingIndex().CompareTo(x.GetSiblingIndex()));   // insert from the back so indices stay valid
+                foreach (var src in ordered)
+                {
+                    var clone = UnityEngine.Object.Instantiate(src.gameObject, src.parent, false);
+                    clone.name = src.name + "_apocapocket";
+                    foreach (var f in clone.GetComponentsInChildren<PlayMakerFSM>(true)) UnityEngine.Object.DestroyImmediate(f);
+                    clone.transform.position = src.position - new Vector3(worldShift, 0f, 0f);
+                    clone.transform.SetSiblingIndex(src.GetSiblingIndex() + 1);
+                    _cardParts.Add(new KeyValuePair<GameObject, GameObject>(src.gameObject, clone));
+                    if (src == bg) { _bgSource = bg.gameObject; _bgClone = clone; }
+                }
+                Plugin.V("Extra slot UI: cloned the card and " + (parts.Count - 1) + " decoration(s) on it");
             }
 
             for (int i = 0; i < Max; i++)
@@ -141,6 +162,30 @@ namespace Apocapocket
         }
 
         private static GameObject _bgSource, _bgClone;
+        private static readonly List<KeyValuePair<GameObject, GameObject>> _cardParts = new List<KeyValuePair<GameObject, GameObject>>();
+
+        private static Rect WorldRect(Transform t)
+        {
+            var rt = t as RectTransform;
+            if (rt == null) return new Rect(t.position.x, t.position.y, 0f, 0f);
+            var c = new Vector3[4]; rt.GetWorldCorners(c);
+            float minX = Mathf.Min(c[0].x, c[2].x), minY = Mathf.Min(c[0].y, c[2].y);
+            return new Rect(minX, minY, Mathf.Abs(c[2].x - c[0].x), Mathf.Abs(c[2].y - c[0].y));
+        }
+
+        private static void DumpChildren(Transform container)
+        {
+            if (!Plugin.Verbose.Value) return;
+            var sb = new System.Text.StringBuilder("Card container " + Path(container) + ":");
+            foreach (Transform ch in container)
+            {
+                var r = WorldRect(ch);
+                sb.Append("\n  [").Append(ch.GetSiblingIndex()).Append("] ").Append(ch.name).Append(ch.gameObject.activeSelf ? "" : " (inactive)")
+                  .Append(" rect=(").Append(r.x.ToString("0")).Append(",").Append(r.y.ToString("0")).Append(" ").Append(r.width.ToString("0")).Append("x").Append(r.height.ToString("0")).Append(")");
+                foreach (var c in ch.GetComponents<Component>()) if (c != null && !(c is Transform) && !(c is CanvasRenderer)) sb.Append(" [").Append(c.GetType().Name).Append("]");
+            }
+            Plugin.Log.LogInfo(sb.ToString());
+        }
 
         private static Vector3 Center(Transform t)
         {
@@ -192,10 +237,11 @@ namespace Apocapocket
         internal static void UpdateUi(Func<int, GameObject> itemInSlot, int heldFrom)
         {
             int active = Active;
-            if (_bgClone != null)
+            foreach (var kv in _cardParts)
             {
-                bool showBg = active > 0 && _bgSource != null && _bgSource.activeInHierarchy;
-                if (_bgClone.activeSelf != showBg) _bgClone.SetActive(showBg);
+                if (kv.Value == null) continue;
+                bool showPart = active > 0 && kv.Key != null && kv.Key.activeSelf;
+                if (kv.Value.activeSelf != showPart) kv.Value.SetActive(showPart);
             }
             for (int i = 0; i < Max; i++)
             {
