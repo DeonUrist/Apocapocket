@@ -12,8 +12,9 @@ namespace Apocapocket
     ///    like an item in Slot 1..3. Easy Save stores an item's parent as a reference ID, so each holder (GameObject and
     ///    Transform) is registered in the scene's ES3 reference manager under a FIXED ID: a save made with an item in slot 5
     ///    resolves that parent again after a load, as long as the holders are registered before the game loads its items.
-    ///  - UI: slot 3's widget (RawImage icon + coloured frame + number label) is cloned three times and placed at the same
-    ///    spacing to the right. Icon / frame colour / selection outline are driven by the mod (no FSMs on the clones).
+    ///  - UI: slot k's icon + number label are cloned for slot k+3 and placed one card width to the left (order 4 5 6 | 1 2 3),
+    ///    together with a clone of the rusty slot card behind them. Icon / label colour / selection outline are driven by the
+    ///    mod (no FSMs on the clones).
     internal static class ExtraSlots
     {
         internal const int Max = 3;
@@ -82,65 +83,120 @@ namespace Apocapocket
             catch (Exception e) { _uiFailed = true; Plugin.Log.LogWarning("Extra slot UI could not be built: " + e); }
         }
 
-        internal static void ResetUi() { _uiFailed = false; for (int i = 0; i < Max; i++) { _icons[i] = null; _frames[i] = null; _outlines[i] = null; _uiRoots[i].Clear(); } }
+        internal static void ResetUi() { _uiFailed = false; _bgClone = null; _bgSource = null; for (int i = 0; i < Max; i++) { _icons[i] = null; _frames[i] = null; _outlines[i] = null; _uiRoots[i].Clear(); } }
 
         private static void BuildUi(Transform slot2, Transform slot3)
         {
-            GameObject img2, frame2, img3, frame3;
-            Texture emptyTex; Color emptyCol, fullCol;
-            if (!ReadSlotUi(slot2, out img2, out frame2, out emptyTex, out emptyCol, out fullCol)) return;
-            if (!ReadSlotUi(slot3, out img3, out frame3, out emptyTex, out emptyCol, out fullCol)) return;
-            if (img3 == null || frame3 == null) return;
-            _emptyTex = emptyTex; _emptyColor = emptyCol; _fullColor = fullCol;
-
-            // The widget root(s) of slot 3: highest ancestors that do not also contain slot 2's parts.
-            var roots3 = new List<Transform>();
-            var r1 = SlotRoot(img3.transform, frame2.transform, img2.transform);
-            var r2 = SlotRoot(frame3.transform, frame2.transform, img2.transform);
-            roots3.Add(r1); if (r2 != r1) roots3.Add(r2);
-            var roots2 = new List<Transform>();
-            var q1 = SlotRoot(img2.transform, frame3.transform, img3.transform);
-            var q2 = SlotRoot(frame2.transform, frame3.transform, img3.transform);
-            roots2.Add(q1); if (q2 != q1) roots2.Add(q2);
-            var parent = r1.parent;
-            // Number labels ("3") that sit outside the widget root(s).
-            foreach (Transform c in parent)
-                if (!roots3.Contains(c) && !roots2.Contains(c) && HasText(c, "3")) roots3.Add(c);
-
-            var rt3 = r1 as RectTransform; var rt2 = q1 as RectTransform;
-            Vector2 step = rt3 != null && rt2 != null ? rt3.anchoredPosition - rt2.anchoredPosition : new Vector2(60f, 0f);
-            bool layout = parent.GetComponent<LayoutGroup>() != null;
-            Plugin.V("Extra slot UI: cloning " + roots3.Count + " object(s) of slot 3 under " + Path(parent) + ", step " + step + (layout ? " (layout group)" : ""));
+            // Read what each game slot's SlotEmptyFull FSM writes: icon RawImage, number label (frame), colours, empty texture.
+            var slotObjs = new[] { slot3.parent != null ? slot3.parent.Find("Slot 1") : null, slot2, slot3 };
+            var img = new GameObject[3]; var frame = new GameObject[3];
+            for (int k = 0; k < 3; k++)
+            {
+                if (slotObjs[k] == null) return;
+                Texture et; Color ec, fc;
+                if (!ReadSlotUi(slotObjs[k], out img[k], out frame[k], out et, out ec, out fc)) return;
+                if (img[k] == null || frame[k] == null) return;
+                if (k == 2) { _emptyTex = et; _emptyColor = ec; _fullColor = fc; }
+            }
+            var parent = img[0].transform.parent;
             DumpOnce(parent);
+
+            // Distance between the two groups: one background card width (so 4 5 6 sit on their own card left of 1 2 3).
+            Vector3 c1 = Center(img[0].transform), c3 = Center(img[2].transform);
+            var bg = FindBackground(parent, c1, c3);
+            float worldShift = bg != null ? WorldWidth(bg) : (c3.x - c1.x) * 1.5f;
+            float localShift = worldShift / Mathf.Max(0.0001f, parent.lossyScale.x);
+            Plugin.V("Extra slot UI: slot group shift " + localShift.ToString("0.0") + " (card " + (bg != null ? Path(bg) + " width " + WorldWidth(bg).ToString("0.0") : "not found") + ")");
+
+            if (bg != null)
+            {
+                _bgSource = bg.gameObject;
+                _bgClone = UnityEngine.Object.Instantiate(bg.gameObject, bg.parent, false);
+                _bgClone.name = bg.name + "_apocapocket";
+                foreach (var f in _bgClone.GetComponentsInChildren<PlayMakerFSM>(true)) UnityEngine.Object.DestroyImmediate(f);
+                _bgClone.transform.position = bg.position - new Vector3(worldShift, 0f, 0f);
+                _bgClone.transform.SetSiblingIndex(bg.GetSiblingIndex() + 1);   // same depth: still drawn before (under) the slots
+            }
 
             for (int i = 0; i < Max; i++)
             {
-                string num = (i + 4).ToString();
-                foreach (var src in roots3)
+                int k = i;   // slot 4 <- widgets of slot 1, 5 <- 2, 6 <- 3
+                string from = (k + 1).ToString(), to = (k + 4).ToString();
+                foreach (var srcGo in new[] { img[k], frame[k] })
                 {
-                    var clone = UnityEngine.Object.Instantiate(src.gameObject, parent, false);
-                    clone.name = src.name.Replace("3", num) + "_apocapocket";
+                    var src = srcGo.transform;
+                    var clone = UnityEngine.Object.Instantiate(srcGo, parent, false);
+                    clone.name = src.name.Replace(from, to) + "_apocapocket";
                     foreach (var f in clone.GetComponentsInChildren<PlayMakerFSM>(true)) UnityEngine.Object.DestroyImmediate(f);
-                    var crt = clone.transform as RectTransform;
-                    var srt = src as RectTransform;
-                    if (crt != null && srt != null) crt.anchoredPosition = srt.anchoredPosition + step * (i + 1);
-                    if (layout) clone.transform.SetSiblingIndex(src.GetSiblingIndex() + 1 + i);
-                    SetTexts(clone.transform, "3", num);
+                    var crt = clone.transform as RectTransform; var srt = src as RectTransform;
+                    if (crt != null && srt != null) crt.anchoredPosition = srt.anchoredPosition - new Vector2(localShift, 0f);
+                    else clone.transform.position = src.position - new Vector3(worldShift, 0f, 0f);
+                    SetTexts(clone.transform, from, to);
                     _uiRoots[i].Add(clone);
-                    // Counterparts of slot 3's icon / frame inside this clone.
-                    var ic = Counterpart(src, img3.transform, clone.transform);
-                    if (ic != null && _icons[i] == null) _icons[i] = ic.GetComponent<RawImage>();
-                    var fr = Counterpart(src, frame3.transform, clone.transform);
-                    if (fr != null && _frames[i] == null) { _frames[i] = fr.GetComponent<Graphic>(); _outlines[i] = fr.GetComponent<Outline>(); }
+                    if (srcGo == img[k]) _icons[i] = clone.GetComponent<RawImage>();
+                    else { _frames[i] = clone.GetComponent<Graphic>(); _outlines[i] = clone.GetComponent<Outline>(); }
                 }
             }
-            Plugin.V("Extra slot UI ready: icons " + (_icons[0] != null) + ", frames " + (_frames[0] != null) + ", outline " + (_outlines[0] != null));
+            Plugin.V("Extra slot UI ready: icons " + (_icons[0] != null) + ", frames " + (_frames[0] != null) + ", outline " + (_outlines[0] != null) + ", card " + (_bgClone != null));
+        }
+
+        private static GameObject _bgSource, _bgClone;
+
+        private static Vector3 Center(Transform t)
+        {
+            var rt = t as RectTransform;
+            if (rt == null) return t.position;
+            var c = new Vector3[4]; rt.GetWorldCorners(c);
+            return (c[0] + c[2]) * 0.5f;
+        }
+
+        private static float WorldWidth(Transform t)
+        {
+            var rt = t as RectTransform;
+            if (rt == null) return 0f;
+            var c = new Vector3[4]; rt.GetWorldCorners(c);
+            return Mathf.Abs(c[2].x - c[0].x);
+        }
+
+        /// The slot card: smallest Image/RawImage on the canvas (outside the slot group, not one of its ancestors, not
+        /// full-screen) whose rectangle holds the centres of slot 1 and slot 3.
+        private static Transform FindBackground(Transform slotGroup, Vector3 c1, Vector3 c3)
+        {
+            var canvas = slotGroup.GetComponentInParent<Canvas>();
+            if (canvas == null) return null;
+            var root = canvas.rootCanvas != null ? canvas.rootCanvas.transform : canvas.transform;
+            var rootRt = root as RectTransform;
+            float screenArea = rootRt != null ? Mathf.Abs(rootRt.rect.width * rootRt.rect.height * root.lossyScale.x * root.lossyScale.y) : float.MaxValue;
+            Transform best = null; float bestArea = float.MaxValue;
+            var sb = new System.Text.StringBuilder("Slot card candidates:");
+            foreach (var g in root.GetComponentsInChildren<Graphic>(true))
+            {
+                if (!(g is Image) && !(g is RawImage)) continue;
+                var t = g.transform as RectTransform;
+                if (t == null || t == slotGroup || t.IsChildOf(slotGroup) || slotGroup.IsChildOf(t)) continue;
+                if (!g.gameObject.activeInHierarchy || t.name.EndsWith("_apocapocket")) continue;
+                var c = new Vector3[4]; t.GetWorldCorners(c);
+                float minX = Mathf.Min(c[0].x, c[2].x), maxX = Mathf.Max(c[0].x, c[2].x), minY = Mathf.Min(c[0].y, c[2].y), maxY = Mathf.Max(c[0].y, c[2].y);
+                bool holds = c1.x >= minX && c1.x <= maxX && c3.x >= minX && c3.x <= maxX && c1.y >= minY && c1.y <= maxY;
+                if (!holds) continue;
+                float area = (maxX - minX) * (maxY - minY);
+                sb.Append("\n  ").Append(Path(t)).Append(" ").Append((maxX - minX).ToString("0")).Append("x").Append((maxY - minY).ToString("0"));
+                if (area > screenArea * 0.25f) continue;
+                if (area < bestArea) { bestArea = area; best = t; }
+            }
+            Plugin.V(sb.ToString());
+            return best;
         }
 
         /// Per frame: visibility (only active slots), icon or empty texture, frame colour, selection outline.
         internal static void UpdateUi(Func<int, GameObject> itemInSlot, int heldFrom)
         {
             int active = Active;
+            if (_bgClone != null)
+            {
+                bool showBg = active > 0 && _bgSource != null && _bgSource.activeInHierarchy;
+                if (_bgClone.activeSelf != showBg) _bgClone.SetActive(showBg);
+            }
             for (int i = 0; i < Max; i++)
             {
                 bool show = i < active;
@@ -201,37 +257,8 @@ namespace Apocapocket
             return od.OwnerOption == OwnerDefaultOption.UseOwner ? fsm.gameObject : (od.GameObject != null ? od.GameObject.Value : null);
         }
 
-        /// Highest ancestor of t that contains neither of the other slot's parts.
-        private static Transform SlotRoot(Transform t, Transform otherA, Transform otherB)
-        {
-            var r = t;
-            while (r.parent != null && !otherA.IsChildOf(r.parent) && !otherB.IsChildOf(r.parent)) r = r.parent;
-            return r;
-        }
 
-        /// The object in `clone` at the same relative path as `target` has under `src` (null if target is not under src).
-        private static Transform Counterpart(Transform src, Transform target, Transform clone)
-        {
-            if (target != src && !target.IsChildOf(src)) return null;
-            var path = new List<int>();
-            for (var t = target; t != src; t = t.parent) path.Insert(0, t.GetSiblingIndex());
-            var c = clone;
-            foreach (var idx in path) { if (idx >= c.childCount) return null; c = c.GetChild(idx); }
-            return c;
-        }
 
-        private static bool HasText(Transform t, string value)
-        {
-            foreach (var comp in t.GetComponentsInChildren<Component>(true))
-            {
-                if (comp == null) continue;
-                var p = comp.GetType().GetProperty("text", typeof(string));
-                if (p == null || !(comp is Graphic)) continue;
-                var s = p.GetValue(comp, null) as string;
-                if (s != null && s.Trim() == value) return true;
-            }
-            return false;
-        }
 
         private static void SetTexts(Transform t, string from, string to)
         {
