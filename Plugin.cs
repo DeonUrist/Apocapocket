@@ -24,7 +24,7 @@ namespace Apocapocket
     {
         public const string GUID = "com.denis.apocalypter.apocapocket";
         public const string NAME = "Apocapocket";
-        public const string VERSION = "1.1.0";
+        public const string VERSION = "1.2.0";
 
         internal static ManualLogSource Log;
         internal static ConfigEntry<bool> Enabled;
@@ -34,8 +34,8 @@ namespace Apocapocket
         internal static ConfigEntry<float> DefaultX, DefaultY, DefaultZ;
         internal static ConfigEntry<int> IconSize;
         internal static ConfigEntry<int> ExtraSlotCount;
-        internal static ConfigEntry<Key> KeySlot4, KeySlot5, KeySlot6;
-        internal static ConfigEntry<bool> ExtraKeysInVehicle;
+        internal static ConfigEntry<KeyCode> Item4Key, Item5Key, Item6Key, Item4Alt, Item5Alt, Item6Alt;
+        internal static ConfigEntry<bool> ExtraKeysInVehicle, RequireBackpack;
 
         /// Frame on which the mod consumed a Weapon N / Weapon off press (game's GetButtonDown is suppressed that frame).
         internal static int HandledFrame = -100;
@@ -58,10 +58,14 @@ namespace Apocapocket
             Fallback1 = Config.Bind("Keys", "FallbackSlot1", Key.Digit1, "Key polled if the game's 'Weapon 1' input axis cannot be read.");
             Fallback2 = Config.Bind("Keys", "FallbackSlot2", Key.Digit2, "Key polled if the game's 'Weapon 2' input axis cannot be read.");
             Fallback3 = Config.Bind("Keys", "FallbackSlot3", Key.Digit3, "Key polled if the game's 'Weapon 3' input axis cannot be read.");
-            ExtraSlotCount = Config.Bind("ExtraSlots", "Count", 3, new ConfigDescription("Item-only slots 4..6 shown next to the three weapon slots (0 = off). Items in slots above this number are dropped in front of you.", new AcceptableValueRange<int>(0, 3)));
-            KeySlot4 = Config.Bind("ExtraSlots", "KeySlot4", Key.Digit4, "Key for slot 4.");
-            KeySlot5 = Config.Bind("ExtraSlots", "KeySlot5", Key.Digit5, "Key for slot 5.");
-            KeySlot6 = Config.Bind("ExtraSlots", "KeySlot6", Key.Digit6, "Key for slot 6.");
+            ExtraSlotCount = Config.Bind("ExtraSlots", "Count", 3, new ConfigDescription("Maximum number of item-only slots 4..6 (0 = off). Anything in a slot that becomes unavailable is dropped in front of you.", new AcceptableValueRange<int>(0, 3)));
+            RequireBackpack = Config.Bind("ExtraSlots", "RequireBackpack", true, "Slots 4..6 are unlocked by the backpack you wear: small = slot 4, medium = 4-5, large / huge = 4-6. Off = always available (up to Count).");
+            Item4Key = Config.Bind("ExtraSlots", "Item4Key", KeyCode.Alpha4, "Key for slot 4 (also shown as \"Item 4\" in the game's Controls screen; a rebind there is saved here).");
+            Item4Alt = Config.Bind("ExtraSlots", "Item4AltKey", KeyCode.None, "Alternative key for slot 4.");
+            Item5Key = Config.Bind("ExtraSlots", "Item5Key", KeyCode.Alpha5, "Key for slot 5.");
+            Item5Alt = Config.Bind("ExtraSlots", "Item5AltKey", KeyCode.None, "Alternative key for slot 5.");
+            Item6Key = Config.Bind("ExtraSlots", "Item6Key", KeyCode.Alpha6, "Key for slot 6.");
+            Item6Alt = Config.Bind("ExtraSlots", "Item6AltKey", KeyCode.None, "Alternative key for slot 6.");
             ExtraKeysInVehicle = Config.Bind("ExtraSlots", "KeysInVehicle", false, "Also react to the slot 4..6 keys while sitting in a vehicle (off by default: digit keys may be bound to gears).");
             FallbackOff = Config.Bind("Keys", "FallbackWeaponOff", Key.None, "Key polled if the game's 'Weapon off' input axis cannot be read (None = disabled).");
 
@@ -251,6 +255,7 @@ namespace Apocapocket
         // -------------------------------------------------------------- frame loop
         private void Update()
         {
+            try { Keybinds.Tick(); } catch (Exception e) { if (Time.frameCount % 600 == 0) Plugin.Log.LogWarning("Keybinds: " + e.Message); }
             if (!Plugin.Enabled.Value)
             {
                 if (_r != null && _r.Valid) EjectAll("mod disabled");
@@ -261,6 +266,7 @@ namespace Apocapocket
             else if (Time.unscaledTime >= _nextScan) { _nextScan = Time.unscaledTime + 0.5f; Rescan(); }
             if (_r == null || !_r.Valid) return;
 
+            UpdateBackpack();
             ExtraSlots.EnsureUi(_r.Slots[1], _r.Slots[2]);
             try { ExtraSlots.UpdateUi(SlotItem, _heldFrom); } catch (Exception e) { if (Time.frameCount % 600 == 0) Plugin.Log.LogWarning("Extra slot UI: " + e.Message); }
 
@@ -306,17 +312,43 @@ namespace Apocapocket
             int active = ExtraSlots.Active;
             if (active == 0) return -1;
             if (!Plugin.ExtraKeysInVehicle.Value && _r.InCar != null && _r.InCar.ActiveStateName != "OnFoot") return -1;
-            var keys = new[] { Plugin.KeySlot4.Value, Plugin.KeySlot5.Value, Plugin.KeySlot6.Value };
-            for (int i = 0; i < active; i++) if (KeyDown(keys[i])) return 3 + i;
+            for (int i = 0; i < active; i++) if (Keybinds.Down(i)) return 3 + i;
             return -1;
         }
 
-        private static bool KeyDown(Key k)
+        // ------------------------------------------------------------ backpack gate for slots 4..6
+        private int _backpackSlots = -1;
+        private float _lockStableSince;
+        /// Locked slots are only emptied once the backpack state has been stable for a moment during normal play (after a load
+        /// the pocketed items and the worn backpack are restored in the same pass; never eject in between).
+        private bool LockSettled { get { return _backpackSlots >= 0 && Time.unscaledTime - _lockStableSince > 1.5f && GameplayActive(); } }
+        private string _backpackName;
+        /// Small = 1 extra slot, medium = 2, large / huge = 3, none = 0 (from the backpack worn in QuickItems/Backpack_Item).
+        private void UpdateBackpack()
         {
-            if (k == Key.None) return false;
-            try { var kb = Keyboard.current; if (kb != null) return kb[k].wasPressedThisFrame; } catch { }
-            try { KeyCode kc; if (Enum.TryParse(k.ToString(), out kc)) return Input.GetKeyDown(kc); } catch { }
-            return false;
+            int n = 3; string name = "(not required)";
+            if (Plugin.RequireBackpack.Value)
+            {
+                n = 0; name = "none";
+                var holder = _r.Grab.transform.Find("QuickItems/Backpack_Item");
+                GameObject bp = null;
+                if (holder != null)
+                    for (int i = 0; i < holder.childCount; i++) { var c = holder.GetChild(i).gameObject; if (Fsms.Find(c, "saveItemVar") != null || Fsms.Find(c, "ItemName") != null) { bp = c; break; } }
+                if (bp != null)
+                {
+                    name = Icons.PrefabName(bp);
+                    string l = name.ToLowerInvariant();
+                    if (l.Contains("small")) n = 1; else if (l.Contains("medium")) n = 2; else if (l.Contains("large") || l.Contains("huge")) n = 3;
+                    else n = 1;
+                }
+            }
+            if (n != _backpackSlots) _lockStableSince = Time.unscaledTime;
+            if (n != _backpackSlots || name != _backpackName)
+            {
+                if (_backpackSlots >= 0) Plugin.Log.LogInfo("Backpack: " + name + " -> extra slots available: " + Mathf.Min(n, Mathf.Clamp(Plugin.ExtraSlotCount.Value, 0, 3)));
+                _backpackSlots = n; _backpackName = name;
+            }
+            ExtraSlots.Unlocked = n;
         }
 
         private GameObject _guardedHeld;
@@ -354,7 +386,7 @@ namespace Apocapocket
                 if (SlotChild(n) == null) { StoreHeld(held, n, true); return; }                          // empty slot: pocket it there
                 // slot n is occupied (weapon or item): put the held item away first
                 bool putAway = false;
-                if (_heldItem == held && _heldFrom >= 0 && SlotChild(_heldFrom) == null) putAway = StoreHeld(held, _heldFrom, false);
+                if (_heldItem == held && _heldFrom >= 0 && _heldFrom < SlotCount && SlotChild(_heldFrom) == null) putAway = StoreHeld(held, _heldFrom, false);
                 if (!putAway) DropHeld(held);
                 if (slotItem != null) TakeOut(n);
                 else if (n < 3) DrawWeaponNextFrame(n);
@@ -368,7 +400,7 @@ namespace Apocapocket
             var held = HeldItem();
             if (held == null) return;
             Plugin.V("Weapon off: held=" + Name(held) + " from=" + (_heldFrom + 1));
-            if (_heldItem == held && _heldFrom >= 0 && SlotChild(_heldFrom) == null) { StoreHeld(held, _heldFrom, true); return; }
+            if (_heldItem == held && _heldFrom >= 0 && _heldFrom < SlotCount && SlotChild(_heldFrom) == null) { StoreHeld(held, _heldFrom, true); return; }
             for (int i = 0; i < SlotCount; i++) if (SlotChild(i) == null) { StoreHeld(held, i, true); return; }
             DropHeld(held);
         }
@@ -528,6 +560,7 @@ namespace Apocapocket
             if (_steps.Count > 0 || _inTransit != null || _heldItem != null) Plugin.V("Reset transient state (" + why + "): " + _steps.Count + " queued step(s) dropped");
             _steps.Clear(); _inTransit = null; _heldItem = null; _heldFrom = -1;
             for (int i = 0; i < _stored.Length; i++) _stored[i] = null;
+            _backpackSlots = -1; _lockStableSince = Time.unscaledTime; ExtraSlots.Unlocked = 3;
             ExtraSlots.ResetUi();
         }
 
@@ -549,6 +582,12 @@ namespace Apocapocket
         private void Eject(GameObject item, int slot)
         {
             var rec = _stored[slot];
+            if (IsWeapon(item))
+            {
+                // The game's DropWeapon recipe: weapon models/colliders come back through its Visibility/Colliders FSMs.
+                foreach (var f in item.GetComponents<PlayMakerFSM>()) { try { f.SendEvent("CollidersActivate"); f.SendEvent("Activate"); } catch { } }
+                SetFsmEnabled(item, "LockPhysics", true);
+            }
             var drop = _r.Grab.transform.Find("ItemDrop");
             Vector3 pos = drop != null ? drop.position : _r.Grab.transform.position + _r.Grab.transform.forward * 1.0f;
             item.transform.SetParent(null, true);
@@ -580,16 +619,18 @@ namespace Apocapocket
                     if (_stored[i] != null && _stored[i].Item == null) { Plugin.Log.LogWarning("Pocketed item in slot " + (i + 1) + " was destroyed"); _stored[i] = null; }
                     continue;
                 }
-                if (IsWeapon(c)) { _stored[i] = null; continue; }
                 if (c == _inTransit || c == _heldItem) continue;
                 if (i >= SlotCount)
                 {
-                    // Extra slot switched off (config) while it held an item: drop it in front of the player.
-                    Plugin.Log.LogInfo("Slot " + (i + 1) + " is not available; dropping " + c.name);
+                    if (!LockSettled) continue;
+                    // Slot locked (backpack taken off / Count lowered) while it held something - item or weapon: throw it out
+                    // in front of the player, same as when the mod is disabled.
+                    Plugin.Log.LogInfo("Slot " + (i + 1) + " is locked; dropping " + c.name);
                     if (_stored[i] == null || _stored[i].Item != c) _stored[i] = new StoredItem { Item = c, Layer = 9 };
                     Eject(c, i); _stored[i] = null;
                     continue;
                 }
+                if (IsWeapon(c)) { _stored[i] = null; continue; }
                 if (!c.activeSelf) { if (_stored[i] == null || _stored[i].Item != c) { Plugin.Log.LogWarning("Inactive object " + c.name + " in slot " + (i + 1) + "; activating it"); c.SetActive(true); } }
                 if (_stored[i] == null || _stored[i].Item != c)
                 {
@@ -789,6 +830,8 @@ namespace Apocapocket
 
         private bool ButtonDown(string axis, Key fallback)
         {
+            var game = Keybinds.GameActionDown(axis);   // the game's own action: follows rebinds in the Controls screen
+            if (game.HasValue) return game.Value;
             if (_legacyOk) { try { return Input.GetButtonDown(axis); } catch (Exception e) { _legacyOk = false; Plugin.Log.LogWarning("Legacy input axis '" + axis + "' unavailable (" + e.Message + "); using fallback keys."); } }
             if (fallback == Key.None) return false;
             try { var kb = Keyboard.current; if (kb != null) return kb[fallback].wasPressedThisFrame; } catch { }

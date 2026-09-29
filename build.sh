@@ -7,4 +7,4 @@ mcs -nostdlib -noconfig -target:library -langversion:7 -optimize+ -out:${1:-Apoc
   -r:$M/UnityEngine.dll -r:$M/UnityEngine.CoreModule.dll -r:$M/UnityEngine.PhysicsModule.dll -r:$M/UnityEngine.AudioModule.dll \
   -r:$M/UnityEngine.InputLegacyModule.dll -r:$M/Unity.InputSystem.dll \
   -r:$M/UnityEngine.UI.dll -r:$M/UnityEngine.UIModule.dll -r:$M/UnityEngine.TextRenderingModule.dll -r:$M/PlayMaker.dll -r:$M/Assembly-CSharp.dll -r:$M/Assembly-CSharp-firstpass.dll \
-  Plugin.cs Icons.cs ExtraSlots.cs
+  Plugin.cs Icons.cs ExtraSlots.cs Keybinds.cs

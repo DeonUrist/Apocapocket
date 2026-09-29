@@ -33,7 +33,9 @@ namespace Apocapocket
         private static float _nextUiTry;
 
         /// Number of extra slots currently usable (config), 0..3.
-        internal static int Active { get { return Mathf.Clamp(Plugin.ExtraSlotCount.Value, 0, Max); } }
+        internal static int Active { get { return Mathf.Min(Mathf.Clamp(Plugin.ExtraSlotCount.Value, 0, Max), Unlocked); } }
+        /// Slots unlocked by the worn backpack (set by the Runner every frame; 3 when no backpack is required).
+        internal static int Unlocked = 3;
 
         // ------------------------------------------------------------------ holders
         internal static void EnsureHolders(Transform playerCamera)
