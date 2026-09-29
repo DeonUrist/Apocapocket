@@ -190,7 +190,7 @@ namespace Apocapocket
                 bool insideClone = false;
                 foreach (var sk in skip) if (t.IsChildOf(sk)) { insideClone = true; break; }
                 if (insideClone) continue;
-                var r = WorldRect(t);
+                var r = VisualRect(t);
                 if (r.width <= 0f || r.height <= 0f) continue;
                 if (r.width > cardRect.width * 1.2f || r.height > cardRect.height * 1.5f) continue;
                 var c = r.center;
@@ -204,10 +204,39 @@ namespace Apocapocket
                 if (t.parent != null && set.Contains(t.parent)) continue;   // its parent moves it already
                 float sx = t.parent != null ? Mathf.Max(0.0001f, t.parent.lossyScale.x) : 1f;
                 _shifted.Add(new Shifted { T = t, Orig = t.localPosition, Delta = new Vector3(-worldShift / sx, 0f, 0f) });
-                var r = WorldRect(t);
+                var r = VisualRect(t);
                 sb.Append("\n  ").Append(Path(t)).Append(t.gameObject.activeInHierarchy ? "" : " (inactive)").Append(" x=").Append(r.xMin.ToString("0")).Append(" w=").Append(r.width.ToString("0"));
             }
             Plugin.V(sb.ToString());
+        }
+
+        /// Where a UI element is actually drawn. Text boxes in this game are often far wider than their text (1000 px boxes with
+        /// centred text), so for UI.Text the horizontal extent comes from the alignment and the text's preferred width.
+        private static Rect VisualRect(Transform t)
+        {
+            var r = WorldRect(t);
+            var text = t.GetComponent<Text>();
+            if (text == null || string.IsNullOrEmpty(text.text)) return r;
+            float scale = Mathf.Abs(t.lossyScale.x);
+            float w = Mathf.Min(r.width, text.preferredWidth * scale);
+            if (w <= 0f) return r;
+            float x;
+            switch (text.alignment)
+            {
+                case TextAnchor.UpperLeft: case TextAnchor.MiddleLeft: case TextAnchor.LowerLeft: x = r.xMin; break;
+                case TextAnchor.UpperRight: case TextAnchor.MiddleRight: case TextAnchor.LowerRight: x = r.xMax - w; break;
+                default: x = r.center.x - w * 0.5f; break;
+            }
+            float h = Mathf.Min(r.height, text.preferredHeight * Mathf.Abs(t.lossyScale.y));
+            if (h <= 0f) h = r.height;
+            float y;
+            switch (text.alignment)
+            {
+                case TextAnchor.UpperLeft: case TextAnchor.UpperCenter: case TextAnchor.UpperRight: y = r.yMax - h; break;
+                case TextAnchor.LowerLeft: case TextAnchor.LowerCenter: case TextAnchor.LowerRight: y = r.yMin; break;
+                default: y = r.center.y - h * 0.5f; break;
+            }
+            return new Rect(x, y, w, h);
         }
 
         private static void ApplyShift(bool on)

@@ -24,7 +24,7 @@ namespace Apocapocket
     {
         public const string GUID = "com.denis.apocalypter.apocapocket";
         public const string NAME = "Apocapocket";
-        public const string VERSION = "1.2.1";
+        public const string VERSION = "1.2.2";
 
         internal static ManualLogSource Log;
         internal static ConfigEntry<bool> Enabled;
