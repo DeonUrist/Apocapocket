@@ -85,7 +85,7 @@ namespace Apocapocket
             catch (Exception e) { _uiFailed = true; Plugin.Log.LogWarning("Extra slot UI could not be built: " + e); }
         }
 
-        internal static void ResetUi() { _uiFailed = false; _bgClone = null; _bgSource = null; _cardParts.Clear(); for (int i = 0; i < Max; i++) { _icons[i] = null; _frames[i] = null; _outlines[i] = null; _uiRoots[i].Clear(); } }
+        internal static void ResetUi() { _shifted.Clear(); _shiftOn = false; _uiFailed = false; _bgClone = null; _bgSource = null; _cardParts.Clear(); for (int i = 0; i < Max; i++) { _icons[i] = null; _frames[i] = null; _outlines[i] = null; _uiRoots[i].Clear(); } }
 
         private static void BuildUi(Transform slot2, Transform slot3)
         {
@@ -139,6 +139,7 @@ namespace Apocapocket
                     if (src == bg) { _bgSource = bg.gameObject; _bgClone = clone; }
                 }
                 Plugin.V("Extra slot UI: cloned the card and " + (parts.Count - 1) + " decoration(s) on it");
+                CaptureNeighbours(parent, bg, cardRect, worldShift);
             }
 
             for (int i = 0; i < Max; i++)
@@ -164,6 +165,69 @@ namespace Apocapocket
         }
 
         private static GameObject _bgSource, _bgClone;
+
+        // ---- game UI left of the weapon card (Unequip / Drop / Grenade hints on weapon_extra_bg): moved out of the way while
+        //      extra slots are shown, restored to the exact original position when they are not.
+        private class Shifted { public Transform T; public Vector3 Orig; public Vector3 Delta; }
+        private static readonly List<Shifted> _shifted = new List<Shifted>();
+        private static bool _shiftOn;
+
+        private static void CaptureNeighbours(Transform slotGroup, Transform card, Rect cardRect, float worldShift)
+        {
+            var canvas = slotGroup.GetComponentInParent<Canvas>();
+            if (canvas == null) return;
+            var root = canvas.rootCanvas != null ? canvas.rootCanvas.transform : canvas.transform;
+            // Strip directly left of the card, one card wide, same height band.
+            float minX = cardRect.xMin - cardRect.width, maxX = cardRect.xMin + 10f;
+            float minY = cardRect.yMin - 20f, maxY = cardRect.yMax + 20f;
+            var skip = new HashSet<Transform>();
+            foreach (var kv in _cardParts) { if (kv.Key != null) skip.Add(kv.Key.transform); if (kv.Value != null) skip.Add(kv.Value.transform); }
+            var cands = new List<Transform>();
+            foreach (var t in root.GetComponentsInChildren<RectTransform>(true))
+            {
+                if (t == root || skip.Contains(t) || t.name.EndsWith("_apocapocket")) continue;
+                if (t == slotGroup || t.IsChildOf(slotGroup) || slotGroup.IsChildOf(t) || card.IsChildOf(t)) continue;
+                bool insideClone = false;
+                foreach (var sk in skip) if (t.IsChildOf(sk)) { insideClone = true; break; }
+                if (insideClone) continue;
+                var r = WorldRect(t);
+                if (r.width <= 0f || r.height <= 0f) continue;
+                if (r.width > cardRect.width * 1.2f || r.height > cardRect.height * 1.5f) continue;
+                var c = r.center;
+                if (c.x < minX || c.x > maxX || c.y < minY || c.y > maxY) continue;
+                cands.Add(t);
+            }
+            var set = new HashSet<Transform>(cands);
+            var sb = new System.Text.StringBuilder("UI moved aside while slots 4-6 are shown:");
+            foreach (var t in cands)
+            {
+                if (t.parent != null && set.Contains(t.parent)) continue;   // its parent moves it already
+                float sx = t.parent != null ? Mathf.Max(0.0001f, t.parent.lossyScale.x) : 1f;
+                _shifted.Add(new Shifted { T = t, Orig = t.localPosition, Delta = new Vector3(-worldShift / sx, 0f, 0f) });
+                var r = WorldRect(t);
+                sb.Append("\n  ").Append(Path(t)).Append(t.gameObject.activeInHierarchy ? "" : " (inactive)").Append(" x=").Append(r.xMin.ToString("0")).Append(" w=").Append(r.width.ToString("0"));
+            }
+            Plugin.V(sb.ToString());
+        }
+
+        private static void ApplyShift(bool on)
+        {
+            foreach (var sh in _shifted)
+            {
+                if (sh.T == null) continue;
+                var want = on ? sh.Orig + sh.Delta : sh.Orig;
+                if (sh.T.localPosition != want) sh.T.localPosition = want;
+            }
+            _shiftOn = on;
+        }
+
+        /// Mod disabled: hide every extra-slot object and put the game's UI back where it was.
+        internal static void HideAll()
+        {
+            ApplyShift(false);
+            for (int i = 0; i < Max; i++) foreach (var go in _uiRoots[i]) if (go != null && go.activeSelf) go.SetActive(false);
+            foreach (var kv in _cardParts) if (kv.Value != null && kv.Value.activeSelf) kv.Value.SetActive(false);
+        }
         private static readonly List<KeyValuePair<GameObject, GameObject>> _cardParts = new List<KeyValuePair<GameObject, GameObject>>();
 
         private static Rect WorldRect(Transform t)
@@ -239,6 +303,7 @@ namespace Apocapocket
         internal static void UpdateUi(Func<int, GameObject> itemInSlot, int heldFrom)
         {
             int active = Active;
+            ApplyShift(active > 0);
             foreach (var kv in _cardParts)
             {
                 if (kv.Value == null) continue;

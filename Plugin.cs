@@ -24,7 +24,7 @@ namespace Apocapocket
     {
         public const string GUID = "com.denis.apocalypter.apocapocket";
         public const string NAME = "Apocapocket";
-        public const string VERSION = "1.2.0";
+        public const string VERSION = "1.2.1";
 
         internal static ManualLogSource Log;
         internal static ConfigEntry<bool> Enabled;
@@ -258,6 +258,7 @@ namespace Apocapocket
             try { Keybinds.Tick(); } catch (Exception e) { if (Time.frameCount % 600 == 0) Plugin.Log.LogWarning("Keybinds: " + e.Message); }
             if (!Plugin.Enabled.Value)
             {
+                ExtraSlots.HideAll();
                 if (_r != null && _r.Valid) EjectAll("mod disabled");
                 else if (Time.unscaledTime >= _nextScan) { _nextScan = Time.unscaledTime + 0.5f; _r = Refs.Find(); if (_r.Valid) Icons.Slots = _r.Slots; }
                 return;
