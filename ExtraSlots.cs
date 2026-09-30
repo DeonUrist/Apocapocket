@@ -85,7 +85,7 @@ namespace Apocapocket
             catch (Exception e) { _uiFailed = true; Plugin.Log.LogWarning("Extra slot UI could not be built: " + e); }
         }
 
-        internal static void ResetUi() { _shifted.Clear(); _shiftOn = false; _uiFailed = false; _bgClone = null; _bgSource = null; _cardParts.Clear(); for (int i = 0; i < Max; i++) { _icons[i] = null; _frames[i] = null; _outlines[i] = null; _uiRoots[i].Clear(); } }
+        internal static void ResetUi() { for (int i = 0; i < 3; i++) { _gameImg[i] = null; _gameFrame[i] = null; _gameOutline[i] = null; } _shifted.Clear(); _shiftOn = false; _uiFailed = false; _bgClone = null; _bgSource = null; _cardParts.Clear(); for (int i = 0; i < Max; i++) { _icons[i] = null; _frames[i] = null; _outlines[i] = null; _uiRoots[i].Clear(); } }
 
         private static void BuildUi(Transform slot2, Transform slot3)
         {
@@ -101,6 +101,7 @@ namespace Apocapocket
                 if (k == 2) { _emptyTex = et; _emptyColor = ec; _fullColor = fc; }
             }
             var parent = img[0].transform.parent;
+            for (int k = 0; k < 3; k++) { _gameImg[k] = img[k].GetComponent<RawImage>(); _gameFrame[k] = frame[k].GetComponent<Graphic>(); _gameOutline[k] = frame[k].GetComponent<Outline>(); }
             DumpOnce(parent);
 
             // Distance between the two groups: one background card width (so 4 5 6 sit on their own card left of 1 2 3).
@@ -165,6 +166,21 @@ namespace Apocapocket
         }
 
         private static GameObject _bgSource, _bgClone;
+        private static readonly RawImage[] _gameImg = new RawImage[3];
+        private static readonly Graphic[] _gameFrame = new Graphic[3];
+        private static readonly Outline[] _gameOutline = new Outline[3];
+
+        /// While a weapon from an extra slot borrows game slot n, that slot's own widget keeps showing what it held before
+        /// (SlotEmptyFull writes the icon on state entry only, so a per-frame write wins) and its selection outline stays off.
+        internal static void ShowInGameSlot(int n, GameObject item)
+        {
+            if (n < 0 || n > 2 || _gameImg[n] == null) return;
+            Texture t = item != null ? Icons.IconFor(item) : _emptyTex;
+            if (t == null) t = _emptyTex;
+            if (t != null && _gameImg[n].texture != t) { _gameImg[n].texture = t; _gameImg[n].color = Color.white; }
+            if (_gameFrame[n] != null) { var c = item != null ? _fullColor : _emptyColor; if (_gameFrame[n].color != c) _gameFrame[n].color = c; }
+            if (_gameOutline[n] != null && _gameOutline[n].enabled) _gameOutline[n].enabled = false;
+        }
 
         // ---- game UI left of the weapon card (Unequip / Drop / Grenade hints on weapon_extra_bg): moved out of the way while
         //      extra slots are shown, restored to the exact original position when they are not.
@@ -328,8 +344,9 @@ namespace Apocapocket
             return best;
         }
 
-        /// Per frame: visibility (only active slots), icon or empty texture, frame colour, selection outline.
-        internal static void UpdateUi(Func<int, GameObject> itemInSlot, int heldFrom)
+        /// Per frame: visibility (only active slots), icon or empty texture, frame colour, selection outline (`selected` =
+        /// slot index 3..5 whose content is in the hand / drawn, else -1).
+        internal static void UpdateUi(Func<int, GameObject> itemInSlot, int selected)
         {
             int active = Active;
             ApplyShift(active > 0);
@@ -352,7 +369,7 @@ namespace Apocapocket
                     if (_icons[i].texture != t) { _icons[i].texture = t; _icons[i].color = Color.white; }
                 }
                 if (_frames[i] != null) { var c = item != null ? _fullColor : _emptyColor; if (_frames[i].color != c) _frames[i].color = c; }
-                if (_outlines[i] != null) { bool sel = heldFrom == 3 + i; if (_outlines[i].enabled != sel) _outlines[i].enabled = sel; }
+                if (_outlines[i] != null) { bool sel = selected == 3 + i; if (_outlines[i].enabled != sel) _outlines[i].enabled = sel; }
             }
         }
 

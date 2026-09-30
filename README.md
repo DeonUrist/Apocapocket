@@ -17,8 +17,8 @@ backpack adds up to three item-only slots 4 / 5 / 6.
 - **Extra slots 4 / 5 / 6**, shown on a second slot card to the left of 1-3. They are unlocked by the backpack
   you wear (cumulative): small = slot 4, medium = 4-5, large / huge = 4-6. Items go in and out exactly like in slots 1-3.
   Weapons make them **extra holsters**: a gun in your hand goes into an empty slot 4-6 with its key; pressing the key of a
-  slot that holds a gun draws it (it takes the place of the drawn weapon, or of an empty slot 1-3, and that weapon moves
-  into the slot 4-6 you pressed); pressing the key of an empty slot 4-6 while a weapon is drawn holsters it there.
+  slot that holds a gun draws it and it stays that slot's gun (its key again, Weapon off, another slot key or dropping
+  it holsters it back there); pressing the key of an empty slot 4-6 while a weapon is drawn moves it there.
   Anything in a slot that becomes locked (backpack taken off or swapped for a smaller one) or that sits in slots 4-6 while
   the mod is disabled is thrown out in front of you, weapons included; so is anything an older save left under the
   slot holders that no slot owns.
@@ -67,6 +67,8 @@ copy of the item with a private camera and cached for the session (weapons show 
 are holder objects under `PlayerCamera` (registered with Easy Save under fixed reference ids, so their contents save like
 slots 1-3); their UI is cloned from the game's slot widgets and card. The game's draw pipeline (`Weapons` FSM state
 `Slot N`, `WeaponInHand`, the slot's `UseWeapon`/`DropWeapon` FSMs) is hard-wired to the three `Slot` objects, so a weapon
-kept in slot 4-6 is drawn by swapping it into a game slot (the game's `SlotEmptyFull` FSM then treats it as holstered)
-and switching the `Weapons` FSM to that slot; the displaced weapon or item moves into the extra slot. The Item 4-6 controls are extra `KeyAction`s in the game's InsaneSystems InputManager storage,
+kept in slot 4-6 borrows a game slot while it is drawn (the game's `SlotEmptyFull` FSM then treats it as holstered and the
+`Weapons` FSM is switched to that slot); the game slot's own content is parked in the extra slot meanwhile and the UI
+keeps showing both where they belong. As soon as the `Weapons` FSM leaves that slot state, or the weapon leaves the slot
+(dropped), everything moves back. A save made while a gun is drawn from slot 4-6 stores it in the borrowed slot 1-3. The Item 4-6 controls are extra `KeyAction`s in the game's InsaneSystems InputManager storage,
 re-added on every start.

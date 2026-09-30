@@ -29,7 +29,7 @@ namespace Apocapocket
     {
         public const string GUID = "com.denis.apocalypter.apocapocket";
         public const string NAME = "Apocapocket";
-        public const string VERSION = "1.3.0";
+        public const string VERSION = "1.3.1";
 
         internal static ManualLogSource Log;
         internal static ConfigEntry<bool> Enabled;
@@ -274,7 +274,13 @@ namespace Apocapocket
 
             UpdateBackpack();
             ExtraSlots.EnsureUi(_r.Slots[1], _r.Slots[2]);
-            try { ExtraSlots.UpdateUi(SlotItem, _heldFrom); } catch (Exception e) { if (Time.frameCount % 600 == 0) Plugin.Log.LogWarning("Extra slot UI: " + e.Message); }
+            try
+            {
+                // A weapon drawn from an extra slot is shown there (selected); the game slot it borrows shows its old content.
+                ExtraSlots.UpdateUi(DisplayedItem, ProxyActive ? _pxK : _heldFrom);
+                if (ProxyActive) ExtraSlots.ShowInGameSlot(_pxN, ProxyDisplaced);
+            }
+            catch (Exception e) { if (Time.frameCount % 600 == 0) Plugin.Log.LogWarning("Extra slot UI: " + e.Message); }
 
             if (_steps.Count > 0)
             {
@@ -282,6 +288,9 @@ namespace Apocapocket
                 var a = _steps.Dequeue(); try { a(); } catch (Exception e) { Plugin.Log.LogError("step failed: " + e); }
                 return;
             }
+
+            // The game holstered / switched away from / dropped a weapon borrowed from an extra slot: put things back.
+            if (ProxyActive && GameplayActive() && !ProxyIntact()) { Unproxy(null); return; }
 
             GuardHeld();
 
@@ -310,12 +319,29 @@ namespace Apocapocket
 
             if (n == OffKey) { if (WantsOff()) { Plugin.HandledFrame = Time.frameCount; OnWeaponOff(); } return; }
             if (n >= 3) { OnExtraKey(n); return; }
-            if (WantsSlot(n)) { Plugin.HandledFrame = Time.frameCount; OnSlotKey(n); }
+            if (WantsSlot(n))
+            {
+                Plugin.HandledFrame = Time.frameCount;
+                if (ProxyActive) { int m = n; Unproxy(() => OnSlotKey(m)); }   // the borrowed weapon goes home first
+                else OnSlotKey(n);
+            }
         }
+
+        /// What the UI shows in slot i: the borrowed weapon in its own extra slot, else the slot's pocketed item.
+        private GameObject DisplayedItem(int i) { return ProxyActive && i == _pxK ? _pxW : SlotItem(i); }
 
         /// Key of extra slot n (3..5). Items behave like in slots 1-3; weapons make the slot an extra holster.
         private void OnExtraKey(int n)
         {
+            if (ProxyActive)
+            {
+                if (n == _pxK) { Plugin.V("Key slot " + (n + 1) + ": holstering " + _pxW.name + " back into it"); Unproxy(null); return; }
+                var item = SlotItem(n);
+                if (item != null && IsWeapon(item)) { SwapDraw(n); return; }               // un-proxies first, then draws
+                if (HeldItem() != null || item != null) { int m = n; Unproxy(() => OnSlotKey(m)); return; }
+                Unproxy(null);                                                            // empty slot: just holster
+                return;
+            }
             var held = HeldItem();
             var slotItem = SlotItem(n);
             int drawn = DrawnSlot();
@@ -543,7 +569,7 @@ namespace Apocapocket
         /// Move whatever a slot holds into another (empty) slot as a pocketed record; weapons and items alike.
         private void MoveToSlot(GameObject go, int from, int to)
         {
-            var rec = _stored[from];
+            var rec = from >= 0 ? _stored[from] : null;
             if (rec == null || rec.Item != go) rec = new StoredItem { Item = go, HasPose = false, Layer = 9 };
             if (from >= 0) _stored[from] = null;
             go.transform.SetParent(_r.Slots[to], false);
@@ -557,15 +583,56 @@ namespace Apocapocket
             _steps.Enqueue(() => ApplyIcon(to));
         }
 
-        /// Press K with a weapon in extra slot K: swap it into a game slot and draw it from there.
+        /// Hand a weapon over to the game as a holstered weapon in game slot n: undo everything the mod switched off
+        /// (Hide disables every renderer and collider; the game's DropWeapon recipe only re-enables the root renderer via the
+        /// Visibility FSM and never touches colliders, so a dropped weapon would have fallen through the world), then let
+        /// the game hide it its own way (Visibility "Deactivate"; SlotEmptyFull's "full" state repeats that next frame).
+        private void ToGameHolster(GameObject w, StoredItem rec, int n)
+        {
+            if (rec != null) _stored[n] = null;
+            w.transform.SetParent(_r.Slots[n], false);
+            w.transform.localPosition = Vector3.zero;
+            w.transform.localRotation = Quaternion.identity;
+            w.layer = 0;
+            Hide(w, false, rec);                                  // renderers/colliders back as recorded (all if unknown)
+            var rb = w.GetComponent<Rigidbody>();
+            if (rb != null) { rb.velocity = Vector3.zero; rb.angularVelocity = Vector3.zero; rb.useGravity = false; rb.isKinematic = true; }
+            SetFsmEnabled(w, "LockPhysics", true);
+            RestartGuard.Set(w, false);
+            var vis = Fsms.Find(w, "Visibility");
+            if (vis != null) { try { vis.SendEvent("Deactivate"); } catch { } }
+        }
+
+        // ---- proxy: a weapon drawn from an extra slot borrows a game slot only while it is drawn ----------------------
+        private int _pxK = -1, _pxN = -1;          // extra slot the weapon belongs to / game slot it borrows
+        private GameObject _pxW, _pxD;             // the weapon / what the game slot held (now parked in the extra slot)
+        internal bool ProxyActive { get { return _pxK >= 0 && _pxW != null; } }
+        internal int ProxySlot { get { return _pxK; } }
+        internal GameObject ProxyWeapon { get { return _pxW; } }
+        internal int ProxyGameSlot { get { return _pxN; } }
+        internal GameObject ProxyDisplaced { get { return _pxD != null && _pxK >= 0 && _pxD.transform.parent == _r.Slots[_pxK] ? _pxD : null; } }
+
+        /// Still drawn from the borrowed slot? False once the game holstered / switched / dropped it.
+        private bool ProxyIntact()
+        {
+            if (!ProxyActive) return false;
+            if (_pxW.transform.parent != _r.Slots[_pxN]) return false;
+            return _r.Weapons.ActiveStateName == "Slot " + (_pxN + 1);
+        }
+
+        private void ClearProxy() { _pxK = -1; _pxN = -1; _pxW = null; _pxD = null; }
+
+        /// Press K with a weapon in extra slot K: let it borrow a game slot and draw it from there; the UI keeps showing it
+        /// in slot K, the game slot keeps showing what it had, and Unproxy puts everything back once it is holstered.
         private void SwapDraw(int k)
         {
             var rec = _stored[k];
             var w = rec != null ? rec.Item : null;
             if (w == null) return;
+            if (ProxyActive) { Unproxy(() => SwapDraw(k)); return; }
             int n = SwapTarget();
             var displaced = SlotChild(n);
-            Plugin.V("Drawing " + w.name + " from slot " + (k + 1) + " via slot " + (n + 1) + (displaced != null ? " (displacing " + displaced.name + ")" : ""));
+            Plugin.V("Drawing " + w.name + " from slot " + (k + 1) + " via slot " + (n + 1) + (displaced != null ? " (parking " + displaced.name + " in slot " + (k + 1) + ")" : ""));
             _stored[k] = null;
             _inTransit = w;
             AfterHolster(() =>
@@ -573,13 +640,10 @@ namespace Apocapocket
                 Action place = () =>
                 {
                     // Slot n has been empty for a frame (SlotEmptyFull saw it): the new child now runs its "full" recipe
-                    // (layer 0, icon from imageUI, Deactivate/CollidersDisable) as if the game holstered it.
+                    // (layer 0, icon from imageUI, Deactivate) as if the game holstered it.
                     if (SlotChild(n) != null) { Plugin.Log.LogWarning("Slot " + (n + 1) + " is occupied again by " + SlotChild(n).name + "; " + w.name + " goes back to slot " + (k + 1)); _inTransit = null; if (SlotChild(k) == null) Restore(w, rec, k); else DropLoose(w, rec); return; }
-                    w.transform.SetParent(_r.Slots[n], false);
-                    w.transform.localPosition = Vector3.zero;
-                    w.transform.localRotation = Quaternion.identity;
-                    w.layer = 0;
-                    RestartGuard.Set(w, false);                   // it is the game's holstered weapon from here on
+                    ToGameHolster(w, rec, n);
+                    _pxK = k; _pxN = n; _pxW = w; _pxD = SlotChild(k);
                     _inTransit = null;
                     _steps.Enqueue(() => { });                    // one frame for SlotEmptyFull's "full" state
                     _steps.Enqueue(() => DrawWeaponNextFrame(n));
@@ -597,6 +661,47 @@ namespace Apocapocket
                 else place();
             },
             () => { _inTransit = null; if (SlotChild(k) == null) Restore(w, rec, k); else DropLoose(w, rec); });
+        }
+
+        /// End the proxy: holster the weapon if it is still drawn, move it back into its extra slot and give the game slot
+        /// its previous content back. Runs by itself as soon as the game holsters / switches away from / drops the weapon.
+        private void Unproxy(Action then)
+        {
+            if (!ProxyActive) { ClearProxy(); if (then != null) then(); return; }
+            int k = _pxK, n = _pxN; var w = _pxW; var d = ProxyDisplaced;
+            bool wInSlot = w.transform.parent == _r.Slots[n];
+            Plugin.V("Unproxy " + w.name + ": slot " + (n + 1) + " -> slot " + (k + 1) + (d != null ? ", " + d.name + " back to slot " + (n + 1) : "") + (wInSlot ? "" : " (weapon already left the slot)"));
+            ClearProxy();
+            if (wInSlot)
+            {
+                if (_r.Weapons.ActiveStateName == "Slot " + (n + 1)) { SetWeaponBools(-1); _r.Weapons.SendEvent("back"); }
+                _inTransit = w;
+                w.transform.SetParent(_r.Slots[k].parent, false);   // parked; slot n is empty this frame
+                Hide(w, true);
+                _steps.Enqueue(() =>
+                {
+                    if (d != null && d.transform.parent == _r.Slots[k] && SlotChild(n) == null)
+                    {
+                        var drec = _stored[k];
+                        if (IsWeapon(d)) ToGameHolster(d, drec, n); else MoveToSlot(d, k, n);
+                    }
+                    else if (d != null) Plugin.Log.LogWarning(d.name + " could not return to slot " + (n + 1) + (SlotChild(n) != null ? " (occupied by " + SlotChild(n).name + ")" : ""));
+                    if (SlotChild(k) == null) MoveToSlot(w, -1, k);
+                    else { Plugin.Log.LogWarning("Slot " + (k + 1) + " still holds " + SlotChild(k).name + "; " + w.name + " is released"); DropLoose(w, null); }
+                    _inTransit = null;
+                    if (then != null) _steps.Enqueue(then);
+                });
+            }
+            else
+            {
+                // Dropped (or taken) by the game: only the parked content goes back to the game slot.
+                if (d != null && d.transform.parent == _r.Slots[k] && SlotChild(n) == null)
+                {
+                    var drec = _stored[k];
+                    if (IsWeapon(d)) ToGameHolster(d, drec, n); else MoveToSlot(d, k, n);
+                }
+                if (then != null) _steps.Enqueue(then);
+            }
         }
 
         /// Drawn weapon + press K (extra slot K empty): holster it and keep it in slot K.
@@ -732,6 +837,7 @@ namespace Apocapocket
         {
             if (_steps.Count > 0 || _inTransit != null || _heldItem != null) Plugin.V("Reset transient state (" + why + "): " + _steps.Count + " queued step(s) dropped");
             _steps.Clear(); _inTransit = null; _heldItem = null; _heldFrom = -1;
+            ClearProxy();
             for (int i = 0; i < _stored.Length; i++) _stored[i] = null;
             _backpackSlots = -1; _lockStableSince = Time.unscaledTime; ExtraSlots.Unlocked = 3;
             ExtraSlots.ResetUi();
