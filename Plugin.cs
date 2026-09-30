@@ -19,12 +19,17 @@ namespace Apocapocket
     ///  - "Weapon off" while holding a slot item               -> item hides back into its slot
     ///  - switching away while holding an item that can't go back -> item is dropped
     ///  - slots holding weapons keep working exactly as before
+    /// and adds the extra slots 4/5/6 (ExtraSlots.cs), which hold items the same way and weapons as extra holsters:
+    ///  - press K (slot K holds a weapon)                      -> the weapon is drawn: it swaps places with a game slot (the
+    ///                                                            drawn weapon's, else an empty one) and that slot is drawn
+    ///  - weapon drawn + press K (slot K empty)                -> the weapon is holstered into slot K
+    ///  - anything in 4-6 is thrown out when the mod is disabled or the slot locks
     [BepInPlugin(GUID, NAME, VERSION)]
     public class Plugin : BaseUnityPlugin
     {
         public const string GUID = "com.denis.apocalypter.apocapocket";
         public const string NAME = "Apocapocket";
-        public const string VERSION = "1.2.2";
+        public const string VERSION = "1.3.0";
 
         internal static ManualLogSource Log;
         internal static ConfigEntry<bool> Enabled;
@@ -304,7 +309,19 @@ namespace Apocapocket
             if (n == -1) return;
 
             if (n == OffKey) { if (WantsOff()) { Plugin.HandledFrame = Time.frameCount; OnWeaponOff(); } return; }
-            if (WantsSlot(n)) { if (n < 3) Plugin.HandledFrame = Time.frameCount; OnSlotKey(n); }
+            if (n >= 3) { OnExtraKey(n); return; }
+            if (WantsSlot(n)) { Plugin.HandledFrame = Time.frameCount; OnSlotKey(n); }
+        }
+
+        /// Key of extra slot n (3..5). Items behave like in slots 1-3; weapons make the slot an extra holster.
+        private void OnExtraKey(int n)
+        {
+            var held = HeldItem();
+            var slotItem = SlotItem(n);
+            int drawn = DrawnSlot();
+            if (held != null || slotItem != null) { OnSlotKey(n); return; }
+            if (drawn >= 0 && SlotChild(n) == null) { HolsterInto(drawn, n); return; }
+            if (SlotChild(n) != null) Plugin.V("Key slot " + (n + 1) + ": slot holds unregistered " + SlotChild(n).name + "; ignored");
         }
 
         /// Slot index 3..5 whose (configurable) key was pressed this frame, else -1.
@@ -449,6 +466,7 @@ namespace Apocapocket
             var rec = _stored[n];
             if (rec == null || rec.Item == null) return;
             var item = rec.Item;
+            if (n >= 3 && IsWeapon(item)) { SwapDraw(n); return; }   // a weapon in an extra slot is drawn, not hand-carried
             _stored[n] = null;
             _inTransit = item;
             bool weaponOut = _r.HandItemUse.childCount > 0;
@@ -473,6 +491,160 @@ namespace Apocapocket
             Hide(item, true);
             _stored[n] = rec;
             _steps.Enqueue(() => ApplyIcon(n));
+        }
+
+        // ------------------------------------------------------------ weapons in slots 4..6 (extra holsters)
+        // The game's draw pipeline (Weapons FSM state "Slot N" -> WeaponInHand -> Slot N's UseWeapon/DropWeapon FSMs) is
+        // hard-wired to the three Slot objects under Weapons, so a weapon kept in an extra slot is drawn by swapping it into a
+        // game slot first: the game slot's current content (holstered weapon or pocketed item) moves into the extra slot.
+
+        /// Game slot (0..2) whose weapon is drawn right now, else -1 (HandItemUse holds the Weapons object while drawn).
+        private int DrawnSlot()
+        {
+            if (_r.HandItemUse.childCount == 0 || _r.HandItemUse.GetChild(0).name != "Weapons") return -1;
+            string s = _r.Weapons.ActiveStateName;
+            if (s != null && s.StartsWith("Slot ") && s.Length == 6 && s[5] >= '1' && s[5] <= '3') return s[5] - '1';
+            for (int i = 0; i < 3; i++) { var b = _r.Weapons.FsmVariables.GetFsmBool("weapon" + (i + 1) + "_Bool"); if (b != null && b.Value) return i; }
+            return -1;
+        }
+
+        /// Game slot a weapon from an extra slot is swapped into: the drawn weapon's slot, else an empty slot, else the last
+        /// equipped weapon's slot, else slot 1.
+        private int SwapTarget()
+        {
+            int d = DrawnSlot();
+            if (d >= 0) return d;
+            for (int i = 0; i < 3; i++) if (SlotChild(i) == null) return i;
+            for (int i = 0; i < 3; i++) { var b = _r.Weapons.FsmVariables.GetFsmBool("weapon" + (i + 1) + "_Bool"); if (b != null && b.Value && IsWeapon(SlotChild(i))) return i; }
+            for (int i = 0; i < 3; i++) if (IsWeapon(SlotChild(i))) return i;
+            return 0;
+        }
+
+        /// Holster the drawn weapon (Weapons FSM "back" = the game's Weapon off), then run `then` once HandItemUse is empty
+        /// (a few frames at most); `fail` if it never empties (e.g. an aid item is in use).
+        private void AfterHolster(Action then, Action fail)
+        {
+            if (DrawnSlot() >= 0) { Plugin.V("Holstering " + _r.Weapons.ActiveStateName + " (back)"); SetWeaponBools(-1); _r.Weapons.SendEvent("back"); }
+            int tries = 0;
+            Action step = null;
+            step = () =>
+            {
+                if (_r.HandItemUse.childCount > 0)
+                {
+                    if (++tries < 10) { Plugin.V("HandItemUse still occupied; retrying (" + tries + ")"); _steps.Enqueue(step); return; }
+                    Plugin.Log.LogWarning("Hands stay busy (" + _r.HandItemUse.GetChild(0).name + "); cancelling");
+                    fail(); return;
+                }
+                then();
+            };
+            _steps.Enqueue(step);
+        }
+
+        /// Move whatever a slot holds into another (empty) slot as a pocketed record; weapons and items alike.
+        private void MoveToSlot(GameObject go, int from, int to)
+        {
+            var rec = _stored[from];
+            if (rec == null || rec.Item != go) rec = new StoredItem { Item = go, HasPose = false, Layer = 9 };
+            if (from >= 0) _stored[from] = null;
+            go.transform.SetParent(_r.Slots[to], false);
+            go.transform.localPosition = Vector3.zero;
+            go.transform.localRotation = Quaternion.identity;
+            Hide(go, true);
+            GuardLockPhysics(go, to);
+            SetFsmEnabled(go, "Attach", false);
+            SetFsmEnabled(go, "CheckBool", false);
+            _stored[to] = rec;
+            _steps.Enqueue(() => ApplyIcon(to));
+        }
+
+        /// Press K with a weapon in extra slot K: swap it into a game slot and draw it from there.
+        private void SwapDraw(int k)
+        {
+            var rec = _stored[k];
+            var w = rec != null ? rec.Item : null;
+            if (w == null) return;
+            int n = SwapTarget();
+            var displaced = SlotChild(n);
+            Plugin.V("Drawing " + w.name + " from slot " + (k + 1) + " via slot " + (n + 1) + (displaced != null ? " (displacing " + displaced.name + ")" : ""));
+            _stored[k] = null;
+            _inTransit = w;
+            AfterHolster(() =>
+            {
+                Action place = () =>
+                {
+                    // Slot n has been empty for a frame (SlotEmptyFull saw it): the new child now runs its "full" recipe
+                    // (layer 0, icon from imageUI, Deactivate/CollidersDisable) as if the game holstered it.
+                    if (SlotChild(n) != null) { Plugin.Log.LogWarning("Slot " + (n + 1) + " is occupied again by " + SlotChild(n).name + "; " + w.name + " goes back to slot " + (k + 1)); _inTransit = null; if (SlotChild(k) == null) Restore(w, rec, k); else DropLoose(w, rec); return; }
+                    w.transform.SetParent(_r.Slots[n], false);
+                    w.transform.localPosition = Vector3.zero;
+                    w.transform.localRotation = Quaternion.identity;
+                    w.layer = 0;
+                    RestartGuard.Set(w, false);                   // it is the game's holstered weapon from here on
+                    _inTransit = null;
+                    _steps.Enqueue(() => { });                    // one frame for SlotEmptyFull's "full" state
+                    _steps.Enqueue(() => DrawWeaponNextFrame(n));
+                };
+                var d = SlotChild(n);
+                if (d != null)
+                {
+                    if (d == _heldItem) { Plugin.Log.LogWarning("Slot " + (n + 1) + " busy; cancelling"); _inTransit = null; Restore(w, rec, k); return; }
+                    // Park w under the container for a frame so the holder only ever has one child, then move d into it.
+                    // Slot n is empty this frame -> SlotEmptyFull goes "empty" and runs "full" again when w arrives.
+                    w.transform.SetParent(_r.Slots[k].parent, false);
+                    MoveToSlot(d, n, k);
+                    _steps.Enqueue(place);
+                }
+                else place();
+            },
+            () => { _inTransit = null; if (SlotChild(k) == null) Restore(w, rec, k); else DropLoose(w, rec); });
+        }
+
+        /// Drawn weapon + press K (extra slot K empty): holster it and keep it in slot K.
+        private void HolsterInto(int from, int k)
+        {
+            var w = SlotChild(from);
+            if (w == null || !IsWeapon(w)) return;
+            Plugin.V("Holstering " + w.name + " from slot " + (from + 1) + " into slot " + (k + 1));
+            _inTransit = w;
+            AfterHolster(() =>
+            {
+                _inTransit = null;
+                if (SlotChild(k) != null) { Plugin.Log.LogWarning("Slot " + (k + 1) + " is occupied by " + SlotChild(k).name + "; leaving " + w.name + " in slot " + (from + 1)); return; }
+                if (w.transform.parent != _r.Slots[from]) { Plugin.Log.LogWarning(w.name + " left slot " + (from + 1) + "; not moving it"); return; }
+                MoveToSlot(w, from, k);
+                PlayClip("draw_holster", 0.3f);
+            },
+            () => { _inTransit = null; });
+        }
+
+        /// Anything under the extra-slot container that is not the single content of a holder (objects a save parented there
+        /// that no slot owns, a second child in a holder) is thrown out in front of the player: it would otherwise sit
+        /// invisible/visible inside the camera and block the player.
+        private float _nextSweep;
+        private void SweepStranded(string why)
+        {
+            if (Time.unscaledTime < _nextSweep) return;
+            _nextSweep = Time.unscaledTime + 1f;
+            var container = _r.Grab.transform.Find("Apocapocket_ExtraSlots");
+            if (container == null) return;
+            var stray = new List<GameObject>();
+            for (int i = 0; i < container.childCount; i++)
+            {
+                var c = container.GetChild(i);
+                if (c.gameObject == _inTransit || c.gameObject == _heldItem) continue;
+                if (Array.IndexOf(ExtraSlots.Holders, c) >= 0)
+                {
+                    var keep = SlotChild(3 + Array.IndexOf(ExtraSlots.Holders, c));
+                    for (int j = 0; j < c.childCount; j++) { var g = c.GetChild(j).gameObject; if (g != keep && g != _inTransit && g != _heldItem) stray.Add(g); }
+                }
+                else stray.Add(c.gameObject);
+            }
+            foreach (var g in stray)
+            {
+                Plugin.Log.LogWarning("Stranded object " + g.name + " under " + GetPath(g.transform.parent.gameObject) + " (" + why + "); throwing it out");
+                if (!g.activeSelf) g.SetActive(true);
+                Eject(g, -1);
+            }
         }
 
         /// Last resort: the item cannot go back (slot taken) - release it into the world at the drop point, visible and physical.
@@ -572,18 +744,21 @@ namespace Apocapocket
             {
                 if (_r.Slots[i] == null) continue;
                 var c = SlotChild(i);
-                if (c == null || IsWeapon(c) || c == _inTransit) continue;
+                // Weapons in the game's own slots 1-3 are the game's business; anything in slots 4-6 is ours to throw out.
+                if (c == null || (i < 3 && IsWeapon(c)) || c == _inTransit) continue;
                 Plugin.Log.LogInfo("Ejecting " + c.name + " from slot " + (i + 1) + " (" + why + ")");
                 Eject(c, i);
                 _stored[i] = null;
             }
+            SweepStranded(why);
         }
 
         /// Game's DropWeapon recipe for a non-weapon: visible, physics on, at the ItemDrop point, LockPhysics restarted.
         private void Eject(GameObject item, int slot)
         {
-            var rec = _stored[slot];
-            if (IsWeapon(item))
+            var rec = slot >= 0 ? _stored[slot] : null;
+            bool weapon = IsWeapon(item);
+            if (weapon)
             {
                 // The game's DropWeapon recipe: weapon models/colliders come back through its Visibility/Colliders FSMs.
                 foreach (var f in item.GetComponents<PlayMakerFSM>()) { try { f.SendEvent("CollidersActivate"); f.SendEvent("Activate"); } catch { } }
@@ -594,7 +769,8 @@ namespace Apocapocket
             item.transform.SetParent(null, true);
             item.transform.position = pos;
             item.layer = rec != null ? rec.Layer : 9;
-            Hide(item, false, rec);
+            // A holstered weapon had everything off when it was recorded: bring all of it back, like the game's SetVisibility.
+            Hide(item, false, weapon ? null : rec);
             var rb = item.GetComponent<Rigidbody>();
             if (rb == null) rb = item.AddComponent<Rigidbody>();
             rb.isKinematic = false; rb.useGravity = true; rb.velocity = Vector3.zero;
@@ -631,7 +807,8 @@ namespace Apocapocket
                     Eject(c, i); _stored[i] = null;
                     continue;
                 }
-                if (IsWeapon(c)) { _stored[i] = null; continue; }
+                // Weapons in the game's slots 1-3 are holstered by the game itself; in slots 4-6 they are ours (extra holsters).
+                if (i < 3 && IsWeapon(c)) { _stored[i] = null; continue; }
                 if (!c.activeSelf) { if (_stored[i] == null || _stored[i].Item != c) { Plugin.Log.LogWarning("Inactive object " + c.name + " in slot " + (i + 1) + "; activating it"); c.SetActive(true); } }
                 if (_stored[i] == null || _stored[i].Item != c)
                 {
@@ -639,8 +816,9 @@ namespace Apocapocket
                     Vector3 pp; Quaternion pq;
                     if (ApocasaverBridge.TryGetPose(c.name, out pp, out pq)) { rec0.LocalPos = pp; rec0.LocalRot = pq; rec0.HasPose = true; }
                     _stored[i] = rec0;
-                    Plugin.V("Registered stored item in slot " + (i + 1) + ": " + c.name + (rec0.HasPose ? " (pose from save)" : ""));
+                    Plugin.V("Registered stored " + (IsWeapon(c) ? "weapon" : "item") + " in slot " + (i + 1) + ": " + c.name + (rec0.HasPose ? " (pose from save)" : ""));
                     Hide(c, true);
+                    if (IsWeapon(c)) { SetFsmEnabled(c, "Attach", false); SetFsmEnabled(c, "CheckBool", false); }
                     ApplyIcon(i);
                 }
                 else
@@ -676,6 +854,7 @@ namespace Apocapocket
                 Hide(rec.Item, true);
                 GuardLockPhysics(rec.Item, i);
             }
+            SweepStranded("rescan");
         }
 
         /// The game's LockPhysics FSM (LockPhysics_OFF -> wait 3 s -> raycasts -> parent to a car + destroy rigidbody)

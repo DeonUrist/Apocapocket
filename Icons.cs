@@ -21,6 +21,20 @@ namespace Apocapocket
             return i > 0 ? n.Substring(0, i) : n;
         }
 
+        /// The icon the game itself would show for the item (its imageUI FSM texture: weapons, aid items), else a rendered one.
+        internal static Texture IconFor(GameObject item)
+        {
+            Texture t;
+            int id = item.GetInstanceID();
+            if (_byInstance.TryGetValue(id, out t) && t != null) return t;
+            var f = Fsms.Find(item, "imageUI");
+            if (f != null) { try { var v = f.FsmVariables.GetFsmTexture("imageUI"); if (v != null && v.Value != null) t = v.Value; } catch { } }
+            if (t == null) t = Get(item);
+            if (t != null) _byInstance[id] = t;
+            return t;
+        }
+        private static readonly Dictionary<int, Texture> _byInstance = new Dictionary<int, Texture>();
+
         internal static Texture2D Get(GameObject item)
         {
             string key = PrefabName(item);

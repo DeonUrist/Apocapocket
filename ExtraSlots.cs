@@ -347,7 +347,7 @@ namespace Apocapocket
                 var item = itemInSlot(3 + i);
                 if (_icons[i] != null)
                 {
-                    Texture t = item != null ? (Texture)Icons.Get(item) : _emptyTex;
+                    Texture t = item != null ? Icons.IconFor(item) : _emptyTex;
                     if (t == null) t = _emptyTex;
                     if (_icons[i].texture != t) { _icons[i].texture = t; _icons[i].color = Color.white; }
                 }

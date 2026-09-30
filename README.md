@@ -14,9 +14,14 @@ backpack adds up to three item-only slots 4 / 5 / 6.
 - Slots holding weapons behave exactly as before; a slot with an item counts as occupied for weapon pickups.
 - Pocketed items survive saves/loads (they are stored the same way as holstered weapons). Slot keys are ignored in third person
   (vehicle camera). Disabling the mod ejects every pocketed item in front of you.
-- **Extra slots 4 / 5 / 6** (item-only), shown on a second slot card to the left of 1-3. They are unlocked by the backpack
-  you wear (cumulative): small = slot 4, medium = 4-5, large / huge = 4-6. Anything in a slot that becomes locked (backpack
-  taken off or swapped for a smaller one) is thrown out in front of you.
+- **Extra slots 4 / 5 / 6**, shown on a second slot card to the left of 1-3. They are unlocked by the backpack
+  you wear (cumulative): small = slot 4, medium = 4-5, large / huge = 4-6. Items go in and out exactly like in slots 1-3.
+  Weapons make them **extra holsters**: a gun in your hand goes into an empty slot 4-6 with its key; pressing the key of a
+  slot that holds a gun draws it (it takes the place of the drawn weapon, or of an empty slot 1-3, and that weapon moves
+  into the slot 4-6 you pressed); pressing the key of an empty slot 4-6 while a weapon is drawn holsters it there.
+  Anything in a slot that becomes locked (backpack taken off or swapped for a smaller one) or that sits in slots 4-6 while
+  the mod is disabled is thrown out in front of you, weapons included; so is anything an older save left under the
+  slot holders that no slot owns.
   While slots 4-6 are visible, the Unequip / Drop / Grenade hints move left out of their way.
 - The game's **Controls** screen shows the slot keys as **Item 1 / 2 / 3** and adds **Item 4 / 5 / 6** right below them;
   rebinding there is saved to this mod's config (and config edits show up there).
@@ -38,7 +43,7 @@ Config: `BepInEx\config\com.denis.apocalypter.apocapocket.cfg`
 | `[General] IconSize` | `128` | Pixel size of the rendered slot icons |
 | `[General] VerboseLog` | `true` | Log every step |
 | `[HandPose] DefaultX/Y/Z` | `0` | Hand offset used when no pose is known |
-| `[ExtraSlots] Count` | `3` | Maximum number of item-only slots 4-6 (0 = off) |
+| `[ExtraSlots] Count` | `3` | Maximum number of extra slots 4-6 (0 = off) |
 | `[ExtraSlots] RequireBackpack` | `true` | Slots 4-6 unlocked by the worn backpack (off = always available up to `Count`) |
 | `[ExtraSlots] Item4Key..Item6Key` | `Alpha4..Alpha6` | Keys for slots 4-6 (same as "Item 4-6" in the Controls screen) |
 | `[ExtraSlots] Item4AltKey..Item6AltKey` | `None` | Alternative keys |
@@ -58,7 +63,10 @@ parents the item under the `GrabItem` FSM's `Hand`, sets its `Item` variable and
 prefix on `GetButtonDown` keeps the game's own weapon-key handling away from slots that hold items. Pocketed items keep the
 game's `LockPhysics` FSM parked in `off` every frame (entering a vehicle pokes it and it would glue the item to the car), and an
 item that is moved out of its slot by anything else is put straight back. Icons are rendered once per item type from a stripped
-copy of the item with a private camera and cached for the session. Slots 4-6 are holder objects under `PlayerCamera`
-(registered with Easy Save under fixed reference ids, so their contents save like slots 1-3); their UI is cloned from the
-game's slot widgets and card. The Item 4-6 controls are extra `KeyAction`s in the game's InsaneSystems InputManager storage,
+copy of the item with a private camera and cached for the session (weapons show the game's own `imageUI` icon). Slots 4-6
+are holder objects under `PlayerCamera` (registered with Easy Save under fixed reference ids, so their contents save like
+slots 1-3); their UI is cloned from the game's slot widgets and card. The game's draw pipeline (`Weapons` FSM state
+`Slot N`, `WeaponInHand`, the slot's `UseWeapon`/`DropWeapon` FSMs) is hard-wired to the three `Slot` objects, so a weapon
+kept in slot 4-6 is drawn by swapping it into a game slot (the game's `SlotEmptyFull` FSM then treats it as holstered)
+and switching the `Weapons` FSM to that slot; the displaced weapon or item moves into the extra slot. The Item 4-6 controls are extra `KeyAction`s in the game's InsaneSystems InputManager storage,
 re-added on every start.
