@@ -29,7 +29,7 @@ namespace Apocapocket
     {
         public const string GUID = "com.denis.apocalypter.apocapocket";
         public const string NAME = "Apocapocket";
-        public const string VERSION = "1.3.1";
+        public const string VERSION = "1.4.0";
 
         internal static ManualLogSource Log;
         internal static ConfigEntry<bool> Enabled;
@@ -291,6 +291,9 @@ namespace Apocapocket
 
             // The game holstered / switched away from / dropped a weapon borrowed from an extra slot: put things back.
             if (ProxyActive && GameplayActive() && !ProxyIntact()) { Unproxy(null); return; }
+            // The borrowed weapon no longer exists (a thrown blast lance: the Attack FSM spawns a projectile and destroys the
+            // weapon in the slot): only the parked content has to go back to the game slot.
+            if (_pxK >= 0 && _pxW == null && GameplayActive()) { ProxyWeaponGone(); return; }
 
             GuardHeld();
 
@@ -534,13 +537,14 @@ namespace Apocapocket
             return -1;
         }
 
-        /// Game slot a weapon from an extra slot is swapped into: the drawn weapon's slot, else an empty slot, else the last
+        /// Game slot a weapon from an extra slot is swapped into: an empty slot, else the drawn weapon's slot, else the last
         /// equipped weapon's slot, else slot 1.
         private int SwapTarget()
         {
+            // An empty game slot first: nothing has to be parked and the player's weapons stay where they are.
+            for (int i = 0; i < 3; i++) if (SlotChild(i) == null) return i;
             int d = DrawnSlot();
             if (d >= 0) return d;
-            for (int i = 0; i < 3; i++) if (SlotChild(i) == null) return i;
             for (int i = 0; i < 3; i++) { var b = _r.Weapons.FsmVariables.GetFsmBool("weapon" + (i + 1) + "_Bool"); if (b != null && b.Value && IsWeapon(SlotChild(i))) return i; }
             for (int i = 0; i < 3; i++) if (IsWeapon(SlotChild(i))) return i;
             return 0;
@@ -617,7 +621,11 @@ namespace Apocapocket
         {
             if (!ProxyActive) return false;
             if (_pxW.transform.parent != _r.Slots[_pxN]) return false;
-            return _r.Weapons.ActiveStateName == "Slot " + (_pxN + 1);
+            string st = _r.Weapons.ActiveStateName;
+            if (st == "Slot " + (_pxN + 1)) return true;
+            // Using an aid item while drawn: Deactivate -> useAid (2.1 s) -> reEquip -> back to Slot n. Tearing the proxy
+            // down in between would make reEquip draw whatever we put back into slot n instead of the borrowed weapon.
+            return st == "useAid" || st == "reEquip" || st == "checkHandItem";
         }
 
         private void ClearProxy() { _pxK = -1; _pxN = -1; _pxW = null; _pxD = null; }
@@ -698,10 +706,25 @@ namespace Apocapocket
                 if (d != null && d.transform.parent == _r.Slots[k] && SlotChild(n) == null)
                 {
                     var drec = _stored[k];
-                    if (IsWeapon(d)) ToGameHolster(d, drec, n); else MoveToSlot(d, k, n);
+                    if (IsWeapon(d)) { ToGameHolster(d, drec, n); _stored[k] = null; } else MoveToSlot(d, k, n);
                 }
                 if (then != null) _steps.Enqueue(then);
             }
+        }
+
+        /// The proxied weapon was destroyed while drawn (thrown blast lance). Give game slot n its parked content back;
+        /// extra slot k is simply empty afterwards.
+        private void ProxyWeaponGone()
+        {
+            int k = _pxK, n = _pxN;
+            var d = _pxD != null && _pxD.transform.parent == _r.Slots[k] ? _pxD : null;
+            Plugin.V("Weapon drawn from slot " + (k + 1) + " via slot " + (n + 1) + " is gone (thrown/destroyed)" + (d != null ? "; " + d.name + " back to slot " + (n + 1) : ""));
+            ClearProxy();
+            if (d == null) return;
+            if (SlotChild(n) != null) { Plugin.Log.LogWarning(d.name + " could not return to slot " + (n + 1) + " (occupied by " + SlotChild(n).name + "); it stays in slot " + (k + 1)); return; }
+            var drec = _stored[k];
+            if (IsWeapon(d)) { ToGameHolster(d, drec, n); _stored[k] = null; }
+            else MoveToSlot(d, k, n);
         }
 
         /// Drawn weapon + press K (extra slot K empty): holster it and keep it in slot K.
@@ -720,6 +743,73 @@ namespace Apocapocket
                 PlayClip("draw_holster", 0.3f);
             },
             () => { _inTransit = null; });
+        }
+
+        // ---- Use on a weapon lying in the world -------------------------------------------------------------------------
+        // The game's UseWeapon FSMs (Weapons-level while holstered, Slot N's while that weapon is drawn) look at the weapon
+        // under the crosshair (var Item, ID == "weapon") and on "Use" run takeWeapon into the first game slot without children
+        // - the Slot N version only into its own slot, which always holds the drawn weapon. When no game slot can take it the
+        // press does nothing; that is the case the extra slots pick up.
+
+        /// Extra slot (3..5) that would take a weapon from the world right now, else -1.
+        private int FreeExtraSlot()
+        {
+            for (int i = 3; i < SlotCount; i++) if (SlotChild(i) == null && !(ProxyActive && _pxK == i)) return i;
+            return -1;
+        }
+
+        /// Called from the GetButtonDown("Use") prefix of a UseWeapon FSM sitting in its "over" state. Returns true when the
+        /// game's poll is to be skipped (the mod owns this pickup); also keeps the "Take Weapon" hint pointing at our slot.
+        internal bool UseOnWorldWeapon(PlayMakerFSM useFsm)
+        {
+            if (_r == null || !_r.Valid || useFsm == null || useFsm.Fsm == null) return false;
+            var itemVar = useFsm.FsmVariables.GetFsmGameObject("Item");
+            var item = itemVar != null ? itemVar.Value : null;
+            if (item == null || !IsWeapon(item)) return false;
+            // Would the game's own takeWeapon succeed? Weapons-level: any game slot without children; Slot N-level: that slot.
+            bool vanillaOk;
+            var owner = useFsm.gameObject;
+            if (owner == _r.Weapons.gameObject) { vanillaOk = false; for (int i = 0; i < 3; i++) if (_r.Slots[i].childCount == 0) { vanillaOk = true; break; } }
+            else vanillaOk = owner.transform.childCount == 0;
+            if (vanillaOk) return false;
+            int k = FreeExtraSlot();
+            if (k < 0) return false;
+            // Already in someone's custody (a slot, the hand, in transit)?
+            if (item.transform.parent != null && (item.transform.parent.IsChildOf(_r.Grab.transform) || item.transform.parent.IsChildOf(_r.Weapons.transform))) return false;
+            if (item == _inTransit || item == HeldItem()) return false;
+
+            SetUseHint(useFsm, "Take Weapon to Slot " + (k + 1) + " (F)");
+            if (!ButtonDown("Use", Key.None)) return true;   // hint only; the game's poll is skipped (it would fail anyway)
+            if (!GameplayActive()) return true;
+
+            Plugin.V("Use on " + item.name + ": no free game slot; taking it into slot " + (k + 1));
+            var rec = new StoredItem { Item = item, HasPose = false, Layer = item.layer };
+            rec.Renderers = new List<Renderer>(); foreach (var r in item.GetComponentsInChildren<Renderer>(true)) if (r != null && r.enabled) rec.Renderers.Add(r);
+            rec.Colliders = new List<Collider>(); foreach (var c in item.GetComponentsInChildren<Collider>(true)) if (c != null && c.enabled) rec.Colliders.Add(c);
+            SetFsmEnabled(item, "Attach", false);
+            SetFsmEnabled(item, "CheckBool", false);
+            item.transform.SetParent(_r.Slots[k], false);
+            item.transform.localPosition = Vector3.zero;
+            item.transform.localRotation = Quaternion.identity;
+            Hide(item, true);
+            GuardLockPhysics(item, k);
+            _stored[k] = rec;
+            SetUseHint(useFsm, "");
+            PlayClip("draw_holster", 0.3f);
+            return true;
+        }
+
+        /// The "Take Weapon (F)" text the UseWeapon FSM writes on entering "over" (its UI_ItemUse variable).
+        private static void SetUseHint(PlayMakerFSM useFsm, string text)
+        {
+            try
+            {
+                var v = useFsm.FsmVariables.GetFsmGameObject("UI_ItemUse");
+                if (v == null || v.Value == null) return;
+                var t = v.Value.GetComponent<UnityEngine.UI.Text>();
+                if (t != null && t.text != text) t.text = text;
+            }
+            catch { }
         }
 
         /// Anything under the extra-slot container that is not the single content of a holder (objects a save parented there
@@ -1160,6 +1250,19 @@ namespace Apocapocket
                 // Slot N's DropWeapon FSM: only block when that slot holds a pocketed item.
                 if (run == null || __instance.Fsm == null || __instance.Fsm.GameObject == null) return true;
                 if (!run.SlotHoldsItem(__instance.Fsm.GameObject.transform)) return true;
+                if (__instance.storeResult != null) __instance.storeResult.Value = false;
+                return false;
+            }
+            if (b == "Use")
+            {
+                // A UseWeapon FSM looking at a weapon no game slot can take: the extra slots take it instead.
+                if (run == null || __instance.Fsm == null || __instance.Fsm.Name != "UseWeapon") return true;
+                var owner = __instance.Fsm.FsmComponent;
+                if (owner == null) return true;
+                bool handled;
+                try { handled = run.UseOnWorldWeapon(owner); }
+                catch (Exception e) { Plugin.Log.LogWarning("Use on weapon: " + e.Message); handled = false; }
+                if (!handled) return true;
                 if (__instance.storeResult != null) __instance.storeResult.Value = false;
                 return false;
             }

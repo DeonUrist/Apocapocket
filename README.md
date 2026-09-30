@@ -19,6 +19,8 @@ backpack adds up to three item-only slots 4 / 5 / 6.
   Weapons make them **extra holsters**: a gun in your hand goes into an empty slot 4-6 with its key; pressing the key of a
   slot that holds a gun draws it and it stays that slot's gun (its key again, Weapon off, another slot key or dropping
   it holsters it back there); pressing the key of an empty slot 4-6 while a weapon is drawn moves it there.
+  **Use** on a weapon lying in the world fills slots 1-3 first, as always; once none of them can take it the hint reads
+  "Take Weapon to Slot 4/5/6 (F)" and Use puts it into the first free extra slot.
   Anything in a slot that becomes locked (backpack taken off or swapped for a smaller one) or that sits in slots 4-6 while
   the mod is disabled is thrown out in front of you, weapons included; so is anything an older save left under the
   slot holders that no slot owns.
@@ -68,7 +70,9 @@ are holder objects under `PlayerCamera` (registered with Easy Save under fixed r
 slots 1-3); their UI is cloned from the game's slot widgets and card. The game's draw pipeline (`Weapons` FSM state
 `Slot N`, `WeaponInHand`, the slot's `UseWeapon`/`DropWeapon` FSMs) is hard-wired to the three `Slot` objects, so a weapon
 kept in slot 4-6 borrows a game slot while it is drawn (the game's `SlotEmptyFull` FSM then treats it as holstered and the
-`Weapons` FSM is switched to that slot); the game slot's own content is parked in the extra slot meanwhile and the UI
-keeps showing both where they belong. As soon as the `Weapons` FSM leaves that slot state, or the weapon leaves the slot
-(dropped), everything moves back. A save made while a gun is drawn from slot 4-6 stores it in the borrowed slot 1-3. The Item 4-6 controls are extra `KeyAction`s in the game's InsaneSystems InputManager storage,
+`Weapons` FSM is switched to that slot). An empty game slot is borrowed when there is one; otherwise the game slot's own
+content is parked in the extra slot meanwhile and the UI keeps showing both where they belong. As soon as the `Weapons` FSM
+leaves that slot state (using an aid item in between is fine), the weapon leaves the slot (dropped) or the weapon is destroyed
+(a thrown blast lance), everything moves back. Picking a weapon up with Use goes through a prefix on the `UseWeapon` FSMs'
+`Use` poll: when their own slot search would find nothing, the extra slots take the weapon with the same `takeWeapon` recipe. A save made while a gun is drawn from slot 4-6 stores it in the borrowed slot 1-3. The Item 4-6 controls are extra `KeyAction`s in the game's InsaneSystems InputManager storage,
 re-added on every start.
