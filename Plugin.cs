@@ -29,18 +29,22 @@ namespace Apocapocket
     {
         public const string GUID = "com.denis.apocalypter.apocapocket";
         public const string NAME = "Apocapocket";
-        public const string VERSION = "1.4.1";
+        public const string VERSION = "1.5.0";
 
         internal static ManualLogSource Log;
         internal static ConfigEntry<bool> Enabled;
         internal static ConfigEntry<bool> Verbose;
-        internal static ConfigEntry<string> Blacklist;
-        internal static ConfigEntry<Key> Fallback1, Fallback2, Fallback3, FallbackOff;
-        internal static ConfigEntry<float> DefaultX, DefaultY, DefaultZ;
-        internal static ConfigEntry<int> IconSize;
-        internal static ConfigEntry<int> ExtraSlotCount;
+        internal static ConfigEntry<bool> RequireBackpack;
+        // Slot 4-6 keys: rebound from the game's Controls screen (Keybinds.cs), kept in a file of their own so the Mods menu
+        // (which lists this plugin's Config) shows only the player-facing settings.
         internal static ConfigEntry<KeyCode> Item4Key, Item5Key, Item6Key, Item4Alt, Item5Alt, Item6Alt;
-        internal static ConfigEntry<bool> ExtraKeysInVehicle, RequireBackpack;
+        // Everything below used to be configurable (<= 1.4.1); fixed since 1.5.0.
+        internal static readonly Fixed<string> Blacklist = new Fixed<string>("PartAdjusterTools;box_cardboard;crate_metal;crate_plastic");
+        internal static readonly Fixed<Key> Fallback1 = new Fixed<Key>(Key.Digit1), Fallback2 = new Fixed<Key>(Key.Digit2), Fallback3 = new Fixed<Key>(Key.Digit3), FallbackOff = new Fixed<Key>(Key.None);
+        internal static readonly Fixed<float> DefaultX = new Fixed<float>(0f), DefaultY = new Fixed<float>(0f), DefaultZ = new Fixed<float>(0f);
+        internal static readonly Fixed<int> IconSize = new Fixed<int>(128);
+        internal static readonly Fixed<int> ExtraSlotCount = new Fixed<int>(3);
+        internal static readonly Fixed<bool> ExtraKeysInVehicle = new Fixed<bool>(false);
 
         /// Frame on which the mod consumed a Weapon N / Weapon off press (game's GetButtonDown is suppressed that frame).
         internal static int HandledFrame = -100;
@@ -50,29 +54,20 @@ namespace Apocapocket
         {
             Log = Logger;
             Config.Bind("General", "Apocasetter", true, "Show this mod in the Apocasetter Mods menu");
-            Enabled = Config.Bind("General", "Enabled", true, "Enable item slots. When disabled the weapon keys behave exactly as before.");
-            Verbose = Config.Bind("General", "VerboseLog", true, "Log every step to the BepInEx console/log.");
-            Blacklist = Config.Bind("General", "BlacklistIDs", "PartAdjusterTools;box_cardboard;crate_metal;crate_plastic",
-                "Items that can never be pocketed, separated by ';'. Each entry matches an item's ID string (FSM 'ID') or its prefab name (e.g. crate_metal). Crates are listed because they carry other items inside.");
-            // Config files written by 1.0.3 and earlier hold the old default only; upgrade them so the crates are covered.
-            if ((Blacklist.Value ?? "").Trim() == "PartAdjusterTools") { Blacklist.Value = (string)Blacklist.DefaultValue; Config.Save(); Logger.LogInfo("BlacklistIDs upgraded to the 1.0.4 default: " + Blacklist.Value); }
-            DefaultX = Config.Bind("HandPose", "DefaultX", 0f, new ConfigDescription("Default hand offset X for items loaded from a save (no remembered pose).", new AcceptableValueRange<float>(-2f, 2f)));
-            DefaultY = Config.Bind("HandPose", "DefaultY", 0f, new ConfigDescription("Default hand offset Y.", new AcceptableValueRange<float>(-2f, 2f)));
-            DefaultZ = Config.Bind("HandPose", "DefaultZ", 0f, new ConfigDescription("Default hand offset Z (forward).", new AcceptableValueRange<float>(-2f, 3f)));
-            IconSize = Config.Bind("General", "IconSize", 128, new ConfigDescription("Pixel size of the rendered item icons shown in the slots.", new AcceptableValueRange<int>(32, 512)));
-            Fallback1 = Config.Bind("Keys", "FallbackSlot1", Key.Digit1, "Key polled if the game's 'Weapon 1' input axis cannot be read.");
-            Fallback2 = Config.Bind("Keys", "FallbackSlot2", Key.Digit2, "Key polled if the game's 'Weapon 2' input axis cannot be read.");
-            Fallback3 = Config.Bind("Keys", "FallbackSlot3", Key.Digit3, "Key polled if the game's 'Weapon 3' input axis cannot be read.");
-            ExtraSlotCount = Config.Bind("ExtraSlots", "Count", 3, new ConfigDescription("Maximum number of item-only slots 4..6 (0 = off). Anything in a slot that becomes unavailable is dropped in front of you.", new AcceptableValueRange<int>(0, 3)));
-            RequireBackpack = Config.Bind("ExtraSlots", "RequireBackpack", true, "Slots 4..6 are unlocked by the backpack you wear: small = slot 4, medium = 4-5, large / huge = 4-6. Off = always available (up to Count).");
-            Item4Key = Config.Bind("ExtraSlots", "Item4Key", KeyCode.Alpha4, "Key for slot 4 (also shown as \"Item 4\" in the game's Controls screen; a rebind there is saved here).");
-            Item4Alt = Config.Bind("ExtraSlots", "Item4AltKey", KeyCode.None, "Alternative key for slot 4.");
-            Item5Key = Config.Bind("ExtraSlots", "Item5Key", KeyCode.Alpha5, "Key for slot 5.");
-            Item5Alt = Config.Bind("ExtraSlots", "Item5AltKey", KeyCode.None, "Alternative key for slot 5.");
-            Item6Key = Config.Bind("ExtraSlots", "Item6Key", KeyCode.Alpha6, "Key for slot 6.");
-            Item6Alt = Config.Bind("ExtraSlots", "Item6AltKey", KeyCode.None, "Alternative key for slot 6.");
-            ExtraKeysInVehicle = Config.Bind("ExtraSlots", "KeysInVehicle", false, "Also react to the slot 4..6 keys while sitting in a vehicle (off by default: digit keys may be bound to gears).");
-            FallbackOff = Config.Bind("Keys", "FallbackWeaponOff", Key.None, "Key polled if the game's 'Weapon off' input axis cannot be read (None = disabled).");
+            Enabled = Config.Bind("General", "Enabled", true, "Enable the item slots. Off = the weapon keys behave exactly as in the vanilla game and everything kept in slots 4-6 is dropped in front of you.");
+            RequireBackpack = Config.Bind("General", "RequireBackpack", true, "Slots 4-6 are unlocked by the backpack you wear: small = slot 4, medium = 4-5, large / huge = 4-6. Off = all three are always available.");
+            Verbose = Config.Bind("Debug", "VerboseLog", false, "Log every step to the BepInEx console/log (debugging only).");
+
+            // Slot 4-6 keys live in their own file (Controls screen <-> file, two-way).
+            string keysPath = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(Config.ConfigFilePath), GUID + ".keys.cfg");
+            var keys = new ConfigFile(keysPath, true);
+            Item4Key = keys.Bind("Keys", "Item4Key", KeyCode.Alpha4, "Key for slot 4 (rebind it in the game's Controls screen, row \"Item 4\").");
+            Item4Alt = keys.Bind("Keys", "Item4AltKey", KeyCode.None, "Alternative key for slot 4.");
+            Item5Key = keys.Bind("Keys", "Item5Key", KeyCode.Alpha5, "Key for slot 5.");
+            Item5Alt = keys.Bind("Keys", "Item5AltKey", KeyCode.None, "Alternative key for slot 5.");
+            Item6Key = keys.Bind("Keys", "Item6Key", KeyCode.Alpha6, "Key for slot 6.");
+            Item6Alt = keys.Bind("Keys", "Item6AltKey", KeyCode.None, "Alternative key for slot 6.");
+            MigrateOldConfig(keys);
 
             var harmony = new Harmony(GUID);
             harmony.PatchAll(typeof(Plugin).Assembly);
@@ -95,6 +90,66 @@ namespace Apocapocket
         }
 
         internal static void V(string s) { if (Verbose.Value) Log.LogInfo(s); }
+
+        /// Config files written by 1.4.1 and earlier: carry the slot 4-6 keys over to the keys file, then drop every setting
+        /// that is hardcoded now so the file (and the Mods menu) only shows what a player needs.
+        private void MigrateOldConfig(ConfigFile keys)
+        {
+            try
+            {
+                var old = new[] { "Item4Key", "Item4AltKey", "Item5Key", "Item5AltKey", "Item6Key", "Item6AltKey" };
+                var mine = new[] { Item4Key, Item4Alt, Item5Key, Item5Alt, Item6Key, Item6Alt };
+                bool moved = false;
+                for (int i = 0; i < old.Length; i++)
+                {
+                    var def = new ConfigDefinition("ExtraSlots", old[i]);
+                    string raw;
+                    if (!TryGetOrphan(Config, def, out raw) || string.IsNullOrEmpty(raw)) continue;
+                    KeyCode kc;
+                    try { kc = (KeyCode)Enum.Parse(typeof(KeyCode), raw.Trim(), true); } catch { continue; }
+                    if (kc != mine[i].Value) { mine[i].Value = kc; moved = true; }
+                }
+                string rb;
+                if (TryGetOrphan(Config, new ConfigDefinition("ExtraSlots", "RequireBackpack"), out rb)) { bool b; if (bool.TryParse(rb, out b)) RequireBackpack.Value = b; }
+                int removed = PurgeOrphans(Config);
+                if (moved || removed > 0) { Config.Save(); Logger.LogInfo("Config cleaned up: " + removed + " old setting(s) removed" + (moved ? ", slot 4-6 keys moved to " + System.IO.Path.GetFileName(keys.ConfigFilePath) : "")); }
+            }
+            catch (Exception e) { Logger.LogWarning("Config migration: " + e.Message); }
+        }
+
+        private static System.Collections.IDictionary Orphans(ConfigFile cfg)
+        {
+            var t = typeof(ConfigFile);
+            var p = t.GetProperty("OrphanedEntries", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+            if (p != null) return p.GetValue(cfg, null) as System.Collections.IDictionary;
+            var f = t.GetField("OrphanedEntries", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+            return f != null ? f.GetValue(cfg) as System.Collections.IDictionary : null;
+        }
+
+        private static bool TryGetOrphan(ConfigFile cfg, ConfigDefinition def, out string raw)
+        {
+            raw = null;
+            var d = Orphans(cfg);
+            if (d == null || !d.Contains(def)) return false;
+            raw = d[def] as string;
+            return raw != null;
+        }
+
+        private static int PurgeOrphans(ConfigFile cfg)
+        {
+            var d = Orphans(cfg);
+            if (d == null) return 0;
+            int n = d.Count;
+            d.Clear();
+            return n;
+        }
+    }
+
+    /// A former config value that is hardcoded now; keeps the `.Value` call sites unchanged.
+    internal sealed class Fixed<T>
+    {
+        public readonly T Value;
+        public Fixed(T v) { Value = v; }
     }
 
     /// Everything the mod knows about the player's slots / hand.
