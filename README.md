@@ -11,7 +11,8 @@ backpack adds up to three item-only slots 4 / 5 / 6.
   position it had when you stored it (drop / throw / rotate / scroll work as usual).
 - Pressing the item's own key again, or **Weapon off**, hides it back into its slot (a world-picked item goes to the first free
   slot; if there is none it is dropped). Switching to another slot while holding an item that cannot go back drops it.
-- Slots holding weapons behave exactly as before; a slot with an item counts as occupied for weapon pickups.
+- Slots holding weapons behave exactly as before; a slot with an item counts as occupied for weapon pickups. A gun carried in
+  the hand (mouse grab) and pressed into slot 1 / 2 / 3 is holstered the game's own way, so it drops normally later.
 - Pocketed items survive saves/loads (they are stored the same way as holstered weapons). Slot keys are ignored in third person
   (vehicle camera). Disabling the mod ejects every pocketed item in front of you.
 - **Extra slots 4 / 5 / 6**, shown on a second slot card to the left of 1-3. They are unlocked by the backpack

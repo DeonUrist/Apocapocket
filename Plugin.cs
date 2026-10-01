@@ -29,7 +29,7 @@ namespace Apocapocket
     {
         public const string GUID = "com.denis.apocalypter.apocapocket";
         public const string NAME = "Apocapocket";
-        public const string VERSION = "1.4.0";
+        public const string VERSION = "1.4.1";
 
         internal static ManualLogSource Log;
         internal static ConfigEntry<bool> Enabled;
@@ -456,6 +456,7 @@ namespace Apocapocket
         private bool StoreHeld(GameObject item, int n, bool emptyHands)
         {
             if (!CanPocket(item)) return false;
+            if (n < 3 && IsWeapon(item)) { HolsterHeldWeapon(item, n, emptyHands); return true; }
             var slot = _r.Slots[n];
             var rec = new StoredItem { Item = item, LocalPos = item.transform.localPosition, LocalRot = item.transform.localRotation, HasPose = true, Layer = item.layer };
             if (item.transform.parent != _r.Hand) rec.HasPose = false;
@@ -480,6 +481,47 @@ namespace Apocapocket
             _steps.Enqueue(() => ApplyIcon(n));
             Plugin.V("Stored " + item.name + " in slot " + (n + 1));
             return true;
+        }
+
+        /// A weapon carried in the hand (mouse grab) pressed into game slot 1-3 becomes the game's holstered weapon: the game's
+        /// own takeWeapon recipe, NOT our item recipe. Hide() switches every renderer and collider off and the game's Drop Weapon
+        /// only brings back what its Visibility / Colliders FSMs know about - a gun pocketed that way fell through the ground when
+        /// dropped (the 1.3.0 bug, fixed for slots 4-6 by ToGameHolster but not for this path until 1.4.1).
+        private void HolsterHeldWeapon(GameObject w, int n, bool emptyHands)
+        {
+            SetFsmEnabled(w, "Attach", false);
+            SetFsmEnabled(w, "CheckBool", false);
+            _r.Grab.SendEvent("not_Hold");
+            ToGameHolster(w, null, n);                        // parent, layer 0, everything enabled, rb frozen, Visibility Deactivate
+            var col = Fsms.Find(w, "Colliders");
+            if (col != null) { try { col.SendEvent("CollidersDisable"); } catch { } }
+            _stored[n] = null;                                // the game's weapon now, like one holstered with Use
+            _heldItem = null; _heldFrom = -1;
+            PlayClip("draw_holster", 0.3f);
+            if (emptyHands) SetWeaponBools(-1);
+            if (_r.Weapons.ActiveStateName == "Slot " + (n + 1)) { SetWeaponBools(-1); _r.Weapons.SendEvent("back"); }
+            Plugin.V("Holstered hand-carried weapon " + w.name + " in slot " + (n + 1) + " (game recipe)");
+        }
+
+        /// Right before the game's Drop Weapon acts on game slot n: make sure nothing of ours is still switched off on the weapon
+        /// (guns stored by older versions / saves made with them). Harmless when nothing was off - the drop makes it visible anyway.
+        internal void BeforeGameDrop(Transform slot)
+        {
+            if (_r == null || !_r.Valid) return;
+            for (int i = 0; i < 3; i++)
+            {
+                if (_r.Slots[i] != slot) continue;
+                var w = SlotChild(i);
+                if (w == null || !IsWeapon(w)) return;
+                int rOff = 0, cOff = 0;
+                foreach (var r in w.GetComponentsInChildren<Renderer>(true)) if (r != null && !r.enabled) rOff++;
+                foreach (var c in w.GetComponentsInChildren<Collider>(true)) if (c != null && !c.enabled) cOff++;
+                Hide(w, false, null);
+                var lp = Fsms.Find(w, "LockPhysics"); if (lp != null && !lp.enabled) lp.enabled = true;
+                RestartGuard.Set(w, false);
+                if (rOff + cOff > 0) Plugin.Log.LogInfo("Drop Weapon on slot " + (i + 1) + ": re-enabled " + rOff + " renderer(s) and " + cOff + " collider(s) of " + w.name);
+                return;
+            }
         }
 
         private void DropHeld(GameObject item)
@@ -1204,7 +1246,7 @@ namespace Apocapocket
             return true;
         }
 
-        private bool ButtonDown(string axis, Key fallback)
+        internal bool ButtonDown(string axis, Key fallback)
         {
             var game = Keybinds.GameActionDown(axis);   // the game's own action: follows rebinds in the Controls screen
             if (game.HasValue) return game.Value;
@@ -1249,7 +1291,13 @@ namespace Apocapocket
             {
                 // Slot N's DropWeapon FSM: only block when that slot holds a pocketed item.
                 if (run == null || __instance.Fsm == null || __instance.Fsm.GameObject == null) return true;
-                if (!run.SlotHoldsItem(__instance.Fsm.GameObject.transform)) return true;
+                var slotTr = __instance.Fsm.GameObject.transform;
+                if (!run.SlotHoldsItem(slotTr))
+                {
+                    // The game is about to drop this slot's weapon: give it back everything we may have switched off.
+                    if (Plugin.Enabled.Value) { try { if (run.ButtonDown("Drop Weapon", Key.None)) run.BeforeGameDrop(slotTr); } catch (Exception e) { Plugin.Log.LogWarning("BeforeGameDrop: " + e.Message); } }
+                    return true;
+                }
                 if (__instance.storeResult != null) __instance.storeResult.Value = false;
                 return false;
             }
