@@ -1,3 +1,11 @@
+# Apocapocket 2.0.4
+
+- Fix: slots 1-6 are really restored when a save is loaded (2.0.0-2.0.2 left pocketed items lying on the ground). Three bugs, all in the save code:
+  - the slot list was never written into the save (the JSON serializer silently skipped it) - entries are now stored as plain text;
+  - the load read the mapping from the wrong save file (stale "SaveFile" FSM variables) - it now reads only the save the game actually loaded;
+  - a stale-mapping check compared the saved timeline with the running clock and always failed - replaced by "the item still lies where the save put it".
+- Saves made with 2.0.0-2.0.2 contain no slot list: their items stay on the ground once; pick them up and slot them again.
+
 # Apocapocket 2.0.2
 
 - Fix: items in slots 4-6 no longer fly out when a save is loaded. The load restored the slots before the worn backpack was back on the character, so slots 4-6 counted as locked. Slots are now always restored, and the backpack lock check runs 5 s after the load during normal play (taking the backpack off still drops slots 4-6 as before).

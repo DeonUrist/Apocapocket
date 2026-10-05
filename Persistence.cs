@@ -10,13 +10,14 @@ namespace Apocapocket
     [Serializable]
     internal sealed class SaveMap
     {
-        public int version = 2;
+        public int version = 3;
         public int selected = -1;
         public bool hasTimeline;
         public float timeline;
-        public SaveSlot[] slots = new SaveSlot[0];
+        // JsonUtility silently skipped the SaveSlot[] field in 2.0.0-2.0.2 (the saved JSON had no "slots" at all), so every
+        // load restored nothing. Entries are hand-encoded strings now (string[] always serialises).
+        public string[] entries = new string[0];
     }
-    [Serializable]
     internal sealed class SaveSlot
     {
         public int slot;
@@ -26,6 +27,33 @@ namespace Apocapocket
         public Quaternion rotation;
         public bool hasPose;
         public int layer;
+        public bool hasWorld;        // the item was laid in the world for the save: where (to recognise it on load)
+        public Vector3 world;
+
+        private static readonly System.Globalization.CultureInfo C = System.Globalization.CultureInfo.InvariantCulture;
+        private static string F(float f) { return f.ToString("R", C); }
+        internal string Encode()
+        {
+            return string.Join("|", new[] { slot.ToString(C), kind ?? "", hasPose ? "1" : "0", layer.ToString(C),
+                F(position.x), F(position.y), F(position.z), F(rotation.x), F(rotation.y), F(rotation.z), F(rotation.w),
+                hasWorld ? "1" : "0", F(world.x), F(world.y), F(world.z), Uri.EscapeDataString(name ?? "") });
+        }
+        internal static SaveSlot Decode(string s)
+        {
+            try
+            {
+                var a = (s ?? "").Split('|');
+                if (a.Length != 16) return null;
+                Func<int, float> f = i => float.Parse(a[i], System.Globalization.NumberStyles.Float, C);
+                return new SaveSlot
+                {
+                    slot = int.Parse(a[0], C), kind = a[1], hasPose = a[2] == "1", layer = int.Parse(a[3], C),
+                    position = new Vector3(f(4), f(5), f(6)), rotation = new Quaternion(f(7), f(8), f(9), f(10)),
+                    hasWorld = a[11] == "1", world = new Vector3(f(12), f(13), f(14)), name = Uri.UnescapeDataString(a[15])
+                };
+            }
+            catch { return null; }
+        }
     }
 
     internal sealed class Persistence
@@ -152,20 +180,21 @@ namespace Apocapocket
             foreach (var f in Resources.FindObjectsOfTypeAll<PlayMakerFSM>())
                 if (f != null && f.FsmName == "Save_NewGO_ArrayList" && f.gameObject.scene.IsValid()) { _waitForRegistry = true; break; }
             _file = CurrentFile(); _writeTries = 0;
-            var entries = new List<SaveSlot>();
+            var entries = new List<string>();
             for (int i = 0; i < 6; i++)
             {
                 var slot = run.Slots[i];
                 if (slot.Content == null) continue;
-                if (Plugin.Enabled.Value)
-                    entries.Add(new SaveSlot { slot = i + 1, name = slot.Content.name, kind = slot.Kind.ToString(), position = slot.Position, rotation = slot.Rotation, hasPose = slot.HasPose, layer = slot.Layer });
+                var e = new SaveSlot { slot = i + 1, name = slot.Content.name, kind = slot.Kind.ToString(), position = slot.Position, rotation = slot.Rotation, hasPose = slot.HasPose, layer = slot.Layer };
                 if (slot.Kind == Kind.Item || i >= 3)
                 {
                     run.MakeWorld(slot, i, false);
                     _worldPositions[slot.Content] = slot.Content.transform.position;
+                    e.hasWorld = true; e.world = slot.Content.transform.position;
                 }
+                if (Plugin.Enabled.Value) entries.Add(e.Encode());
             }
-            _json = Plugin.Enabled.Value ? JsonUtility.ToJson(new SaveMap { selected = _selected, slots = entries.ToArray() }) : null;
+            _json = Plugin.Enabled.Value ? JsonUtility.ToJson(new SaveMap { selected = _selected, entries = entries.ToArray() }) : null;
             Plugin.V("Save mapping: " + _json);
             CacheMapping(_file, _json);
         }
@@ -191,10 +220,18 @@ namespace Apocapocket
 
         private void RestoreLoad(Runner run)
         {
-            foreach (var path in Candidates()) if (!_loadPaths.Contains(path)) _loadPaths.Add(path);
             Loading = false;
             string json = null;
-            foreach (var path in _loadSeen ? _loadPaths : new List<string>())
+            // The loaded slot = ES3Settings.defaultSettings.path once the game is in play (what Apocasaver, Immersive Map and
+            // Apocapatrol use). 2.0.0-2.0.3 tried NewGO_ArrayList/SaveLoadGame "SaveFile" first; those variables are stale
+            // (SaveGame1/another slot), so the mapping was read from the WRONG save and nothing was restored.
+            var loadPaths = new List<string>();
+            string current = null;
+            try { current = ES3Settings.defaultSettings.path; } catch { }
+            if (!string.IsNullOrEmpty(current)) loadPaths.Add(current);
+            if (!string.IsNullOrEmpty(_requestedLoadFile) && !loadPaths.Contains(_requestedLoadFile)) loadPaths.Add(_requestedLoadFile);
+            Plugin.V("Load: reading slot mapping from " + string.Join(", ", loadPaths.ToArray()));
+            foreach (var path in loadPaths)
             {
                 if (TryRead(path, out json)) { _file = path; break; }
                 // Do not use another slot's mapping when the actual loaded save has no mod key.
@@ -206,24 +243,27 @@ namespace Apocapocket
             SaveMap map;
             try { map = JsonUtility.FromJson<SaveMap>(json); }
             catch (Exception e) { Plugin.Log.LogWarning("Invalid save slot mapping: " + e.Message); run.AdoptVanilla(true); return; }
-            if (map == null || map.version != 2 || map.slots == null) { Plugin.Log.LogWarning("Unsupported slot mapping version"); return; }
-            var timeline = _fsm != null ? _fsm.FsmVariables.GetFsmFloat("Timeline") : null;
-            if (map.hasTimeline && timeline != null && Math.Abs(map.timeline - timeline.Value) > 0.00001f)
+            if (map == null || map.version != 3 || map.entries == null)
             {
-                // Vanilla ES3 caches can retain unknown keys after saving without this DLL.
-                // A changed vanilla save revision means this old mapping no longer owns those world items.
-                Plugin.V("Ignoring stale mapping from a save subsequently written without Apocapocket");
+                // 2.0.0-2.0.2 mappings never contained their slot list: nothing to restore, the items lie in the world.
+                Plugin.Log.LogInfo("Load: slot mapping version " + (map != null ? map.version : 0) + " has no slot list; items stay where they were saved");
                 run.AdoptVanilla(true); run.EjectLockedAfterLoad(); return;
             }
+            // Stale-mapping guard (a later save written without Apocapocket can keep this key in the ES3 cache): an entry only
+            // owns an item that still lies where the save put it. (2.0.0-2.0.2 compared the save's Timeline with the LIVE clock
+            // 0.5 s after load, which always differed.)
             var objects = new Dictionary<string, GameObject>(StringComparer.Ordinal);
             foreach (var f in Resources.FindObjectsOfTypeAll<PlayMakerFSM>())
                 if (f != null && f.gameObject.scene.IsValid() && (f.FsmName == "ItemName" || f.FsmName == "saveItemVar" || f.FsmName == "weaponType")) objects[f.gameObject.name] = f.gameObject;
             var used = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var entry in map.slots)
+            foreach (var raw in map.entries)
             {
+                var entry = SaveSlot.Decode(raw);
                 if (entry == null || entry.slot < 1 || entry.slot > 6 || string.IsNullOrEmpty(entry.name) || !used.Add(entry.name)) continue;
                 GameObject item;
                 if (!objects.TryGetValue(entry.name, out item)) { Plugin.Log.LogWarning("Load: missing pocket item " + entry.name); continue; }
+                if (entry.hasWorld && FlatDistance(item.transform.position, entry.world) > 2f)
+                { Plugin.Log.LogInfo("Load: " + item.name + " moved since the slot mapping was saved (save written without Apocapocket?); left in the world"); continue; }
                 int index = entry.slot - 1;
                 if (run.Slots[index].Content != null && run.Slots[index].Content != item) { Plugin.Log.LogWarning("Load: duplicate slot " + entry.slot); continue; }
                 var slot = Runner.Capture(item);
@@ -264,6 +304,9 @@ namespace Apocapocket
         }
         private static ES3Settings Settings(string path, ES3.Location location)
         { var s = new ES3Settings(path); s.location = location; return s; }
+        /// Horizontal distance: the items were saved at the drop point and may have fallen / settled a little before the restore.
+        private static float FlatDistance(Vector3 a, Vector3 b) { a.y = 0f; b.y = 0f; return Vector3.Distance(a, b); }
+
         private void StampTimeline()
         {
             if (_json == null || _fsm == null) return;
