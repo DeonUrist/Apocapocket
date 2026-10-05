@@ -7,14 +7,12 @@ using UnityEngine.UI;
 
 namespace Apocapocket
 {
-    /// Item-only slots 4..6 next to the game's three weapon slots.
-    ///  - Holders: "Slot 4..6" under PlayerCamera/Apocapocket_ExtraSlots. A pocketed item is parented to its holder exactly
-    ///    like an item in Slot 1..3. Easy Save stores an item's parent as a reference ID, so each holder (GameObject and
-    ///    Transform) is registered in the scene's ES3 reference manager under a FIXED ID: a save made with an item in slot 5
-    ///    resolves that parent again after a load, as long as the holders are registered before the game loads its items.
-    ///  - UI: slot k's icon + number label are cloned for slot k+3 and placed one card width to the left (order 4 5 6 | 1 2 3),
-    ///    together with a clone of the rusty slot card behind them. Icon / label colour / selection outline are driven by the
-    ///    mod (no FSMs on the clones).
+    /// Slots 4..6 next to the game's three weapon slots.
+    ///  - Holders are runtime custody locations. Fixed 1.x reference IDs are retained for one migration release only;
+    ///    version 2 normalises pocketed objects to world items before serialization and never saves these parents.
+    ///  - UI: slots stay in numerical order while the card's right edge stays fixed beside the ammo/value panel.
+    ///    Each extra slot extends the card to the left and moves the slot row and left-side hints by one native pitch.
+    ///    End caps remain intact and the middle texture repeats at its original scale.
     internal static class ExtraSlots
     {
         internal const int Max = 3;
@@ -23,6 +21,7 @@ namespace Apocapocket
         private static readonly long[] TrIds = { 7431505000000000402L, 7431505000000000502L, 7431505000000000602L };
 
         internal static readonly Transform[] Holders = new Transform[Max];
+        internal static Transform Staging;
         private static readonly RawImage[] _icons = new RawImage[Max];
         private static readonly Graphic[] _frames = new Graphic[Max];
         private static readonly Outline[] _outlines = new Outline[Max];
@@ -56,7 +55,14 @@ namespace Apocapocket
                     h.SetParent(container, false);
                 }
                 Holders[i] = h;
+                // Resolve 1.x parents during migration only. New saves always normalise these items to the world.
                 Register(h, i);
+            }
+            Staging = container.Find("Staging");
+            if (Staging == null)
+            {
+                Staging = new GameObject("Staging").transform;
+                Staging.SetParent(container, false);
             }
         }
 
@@ -65,7 +71,7 @@ namespace Apocapocket
             try
             {
                 var mgr = ES3Internal.ES3ReferenceMgrBase.Current;
-                if (mgr == null) { Plugin.Log.LogWarning("No Easy Save reference manager in the scene; items in slot " + (i + 4) + " will not survive a save/load"); return; }
+                if (mgr == null) return;
                 long gid = mgr.Get(h.gameObject), tid = mgr.Get(h);
                 if (gid != GoIds[i]) mgr.Add(h.gameObject, GoIds[i]);
                 if (tid != TrIds[i]) mgr.Add(h, TrIds[i]);
@@ -85,7 +91,20 @@ namespace Apocapocket
             catch (Exception e) { _uiFailed = true; Plugin.Log.LogWarning("Extra slot UI could not be built: " + e); }
         }
 
-        internal static void ResetUi() { for (int i = 0; i < 3; i++) { _gameImg[i] = null; _gameFrame[i] = null; _gameOutline[i] = null; } _shifted.Clear(); _shiftOn = false; _uiFailed = false; _bgClone = null; _bgSource = null; _cardParts.Clear(); for (int i = 0; i < Max; i++) { _icons[i] = null; _frames[i] = null; _outlines[i] = null; _uiRoots[i].Clear(); } }
+        internal static void ResetUi()
+        {
+            HideAll();
+            if (_bgExtension != null) UnityEngine.Object.Destroy(_bgExtension.gameObject);
+            _bgExtension = null; _bgGraphic = null; _bgRect = null;
+            foreach (var part in _decorations) if (part.Clone != null) UnityEngine.Object.Destroy(part.Clone);
+            _decorations.Clear(); _shifted.Clear(); _uiFailed = false; _nextUiTry = 0f;
+            for (int i = 0; i < 3; i++)
+            {
+                _gameImg[i] = null; _gameFrame[i] = null; _gameOutline[i] = null;
+                foreach (var go in _uiRoots[i]) if (go != null) UnityEngine.Object.Destroy(go);
+                _icons[i] = null; _frames[i] = null; _outlines[i] = null; _uiRoots[i].Clear();
+            }
+        }
 
         private static void BuildUi(Transform slot2, Transform slot3)
         {
@@ -104,20 +123,20 @@ namespace Apocapocket
             for (int k = 0; k < 3; k++) { _gameImg[k] = img[k].GetComponent<RawImage>(); _gameFrame[k] = frame[k].GetComponent<Graphic>(); _gameOutline[k] = frame[k].GetComponent<Outline>(); }
             DumpOnce(parent);
 
-            // Distance between the two groups: one background card width (so 4 5 6 sit on their own card left of 1 2 3).
+            // Continue the native slot pitch: 4 follows 3, independent of the card's edge padding.
             Vector3 c1 = Center(img[0].transform), c3 = Center(img[2].transform);
             var bg = FindBackground(parent, c1, c3);
-            float worldShift = bg != null ? WorldWidth(bg) : (c3.x - c1.x) * 1.5f;
-            float localShift = worldShift / Mathf.Max(0.0001f, parent.lossyScale.x);
-            Plugin.V("Extra slot UI: slot group shift " + localShift.ToString("0.0") + " (card " + (bg != null ? Path(bg) + " width " + WorldWidth(bg).ToString("0.0") : "not found") + ")");
+            float pitch = Mathf.Abs(c3.x - c1.x) * 0.5f;
+            if (pitch <= 0f) return;
+            float worldShift = pitch * 3f;
 
             if (bg != null)
             {
                 DumpChildren(bg.parent);
-                // The card plus every decoration drawn on it (dividers, slot squares...): siblings in the card's container whose
-                // centre lies on the card. Each copy goes right after its original, so the drawing order stays the same.
-                var parts = new List<Transform> { bg };
                 var cardRect = WorldRect(bg);
+                BuildBackground(bg, cardRect, img[0].transform, img[2].transform, pitch);
+                // Copy per-slot decorations only. The card itself remains the original UI element.
+                var sources = new List<Transform>();
                 foreach (Transform sib in bg.parent)
                 {
                     if (sib == bg || sib.name.EndsWith("_apocapocket") || sib == parent || parent.IsChildOf(sib)) continue;
@@ -125,22 +144,17 @@ namespace Apocapocket
                     var r = WorldRect(sib);
                     if (r.width <= 0f || r.width * r.height >= cardRect.width * cardRect.height) continue;
                     if (!cardRect.Contains(r.center)) continue;
-                    parts.Add(sib);
+                    sources.Add(sib);
                 }
-                var ordered = new List<Transform>(parts);
-                ordered.Sort((x, y) => y.GetSiblingIndex().CompareTo(x.GetSiblingIndex()));   // insert from the back so indices stay valid
-                foreach (var src in ordered)
+                foreach (var sib in sources)
                 {
-                    var clone = UnityEngine.Object.Instantiate(src.gameObject, src.parent, false);
-                    clone.name = src.name + "_apocapocket";
-                    foreach (var f in clone.GetComponentsInChildren<PlayMakerFSM>(true)) UnityEngine.Object.DestroyImmediate(f);
-                    clone.transform.position = src.position - new Vector3(worldShift, 0f, 0f);
-                    clone.transform.SetSiblingIndex(src.GetSiblingIndex() + 1);
-                    _cardParts.Add(new KeyValuePair<GameObject, GameObject>(src.gameObject, clone));
-                    if (src == bg) { _bgSource = bg.gameObject; _bgClone = clone; }
+                    var r = WorldRect(sib);
+                    int slot = Mathf.Clamp(Mathf.CeilToInt((r.center.x - c1.x) / pitch - 0.1f), 0, 2);
+                    var clone = CloneWidget(sib.gameObject, worldShift);
+                    _decorations.Add(new CardDecoration { Source = sib.gameObject, Clone = clone, Slot = slot });
+                    TrackShift(sib, pitch);
+                    TrackShift(clone.transform, pitch);
                 }
-                Plugin.V("Extra slot UI: cloned the card and " + (parts.Count - 1) + " decoration(s) on it");
-                CaptureNeighbours(parent, bg, cardRect, worldShift);
             }
 
             for (int i = 0; i < Max; i++)
@@ -149,23 +163,68 @@ namespace Apocapocket
                 string from = (k + 1).ToString(), to = (k + 4).ToString();
                 foreach (var srcGo in new[] { img[k], frame[k] })
                 {
-                    var src = srcGo.transform;
-                    var clone = UnityEngine.Object.Instantiate(srcGo, parent, false);
-                    clone.name = src.name.Replace(from, to) + "_apocapocket";
-                    foreach (var f in clone.GetComponentsInChildren<PlayMakerFSM>(true)) UnityEngine.Object.DestroyImmediate(f);
-                    var crt = clone.transform as RectTransform; var srt = src as RectTransform;
-                    if (crt != null && srt != null) crt.anchoredPosition = srt.anchoredPosition - new Vector2(localShift, 0f);
-                    else clone.transform.position = src.position - new Vector3(worldShift, 0f, 0f);
+                    var clone = CloneWidget(srcGo, worldShift);
+                    clone.name = srcGo.name.Replace(from, to) + "_apocapocket";
                     SetTexts(clone.transform, from, to);
                     _uiRoots[i].Add(clone);
+                    TrackShift(srcGo.transform, pitch);
+                    TrackShift(clone.transform, pitch);
                     if (srcGo == img[k]) _icons[i] = clone.GetComponent<RawImage>();
                     else { _frames[i] = clone.GetComponent<Graphic>(); _outlines[i] = clone.GetComponent<Outline>(); }
                 }
             }
-            Plugin.V("Extra slot UI ready: icons " + (_icons[0] != null) + ", frames " + (_frames[0] != null) + ", outline " + (_outlines[0] != null) + ", card " + (_bgClone != null));
+            if (bg != null) CaptureNeighbours(parent, bg, WorldRect(bg), pitch);
+            Plugin.V("Slots stay in numerical order; card and left-side hints grow left by " + pitch.ToString("0.0") + " per unlocked slot; ammo/value panel stays fixed");
         }
 
-        private static GameObject _bgSource, _bgClone;
+        private static GameObject CloneWidget(GameObject source, float shift)
+        {
+            var clone = UnityEngine.Object.Instantiate(source, source.transform.parent, false);
+            clone.name = source.name + "_apocapocket";
+            foreach (var f in clone.GetComponentsInChildren<PlayMakerFSM>(true)) UnityEngine.Object.DestroyImmediate(f);
+            foreach (var g in clone.GetComponentsInChildren<Graphic>(true)) g.raycastTarget = false;
+            clone.transform.position = source.transform.position + new Vector3(shift, 0f, 0f);
+            return clone;
+        }
+
+        private static RectTransform _bgRect;
+        private static Graphic _bgGraphic;
+        private static bool _bgEnabled;
+        private static float _bgWidth, _slotWidth;
+        private static Vector2 _bgPosition;
+        private static ExtendedCardGraphic _bgExtension;
+        private class CardDecoration { internal GameObject Source, Clone; internal int Slot; }
+        private static readonly List<CardDecoration> _decorations = new List<CardDecoration>();
+
+        private static void BuildBackground(Transform card, Rect bounds, Transform first, Transform last, float pitch)
+        {
+            _bgRect = card as RectTransform; _bgGraphic = card.GetComponent<Graphic>();
+            if (_bgRect == null || _bgGraphic == null) return;
+            _bgWidth = _bgRect.rect.width; _bgPosition = _bgRect.anchoredPosition; _bgEnabled = _bgGraphic.enabled;
+            float scale = Mathf.Max(0.0001f, Mathf.Abs(card.lossyScale.x));
+            _slotWidth = pitch / scale;
+            var child = new GameObject("Apocapocket.CardExtension", typeof(RectTransform), typeof(CanvasRenderer));
+            child.transform.SetParent(card, false);
+            var rt = (RectTransform)child.transform;
+            rt.anchorMin = Vector2.zero; rt.anchorMax = Vector2.one; rt.offsetMin = Vector2.zero; rt.offsetMax = Vector2.zero;
+            _bgExtension = child.AddComponent<ExtendedCardGraphic>();
+            float left = Mathf.Max(0f, WorldRect(first).xMin - bounds.xMin) / scale;
+            float right = Mathf.Max(0f, bounds.xMax - WorldRect(last).xMax) / scale;
+            _bgExtension.Configure(_bgGraphic, _bgWidth, left, right);
+            child.SetActive(false);
+        }
+
+        private static void ExtendBackground(int slots)
+        {
+            if (_bgRect == null || _bgGraphic == null || _bgExtension == null) return;
+            float width = _slotWidth * slots;
+            _bgRect.SetSizeWithCurrentAnchors(RectTransform.Axis.Horizontal, _bgWidth + width);
+            // Keep the original right edge fixed for any pivot; all added width goes to the left.
+            _bgRect.anchoredPosition = _bgPosition - new Vector2(width * (1f - _bgRect.pivot.x), 0f);
+            _bgGraphic.enabled = slots == 0 && _bgEnabled;
+            _bgExtension.color = _bgGraphic.color;
+            _bgExtension.gameObject.SetActive(slots > 0 && _bgEnabled);
+        }
         private static readonly RawImage[] _gameImg = new RawImage[3];
         private static readonly Graphic[] _gameFrame = new Graphic[3];
         private static readonly Outline[] _gameOutline = new Outline[3];
@@ -182,48 +241,67 @@ namespace Apocapocket
             if (_gameOutline[n] != null && _gameOutline[n].enabled) _gameOutline[n].enabled = false;
         }
 
-        // ---- game UI left of the weapon card (Unequip / Drop / Grenade hints on weapon_extra_bg): moved out of the way while
-        //      extra slots are shown, restored to the exact original position when they are not.
+        internal static void ShowLogicalGameSlot(int n, GameObject item, bool selected)
+        {
+            ShowInGameSlot(n, item);
+            if (n >= 0 && n < 3 && _gameOutline[n] != null) _gameOutline[n].enabled = selected;
+        }
+
+        // ---- The slot widgets, decorations and hints to their left move by one pitch per unlocked slot.
         private class Shifted { public Transform T; public Vector3 Orig; public Vector3 Delta; }
         private static readonly List<Shifted> _shifted = new List<Shifted>();
-        private static bool _shiftOn;
 
-        private static void CaptureNeighbours(Transform slotGroup, Transform card, Rect cardRect, float worldShift)
+        private static void TrackShift(Transform t, float pitch)
+        {
+            // Move each hierarchy once, even when a number label is inside an icon or decoration.
+            foreach (var sh in _shifted)
+                if (t == sh.T || t.IsChildOf(sh.T)) return;
+            _shifted.RemoveAll(sh => sh.T.IsChildOf(t));
+            float sx = t.parent != null ? Mathf.Max(0.0001f, Mathf.Abs(t.parent.lossyScale.x)) : 1f;
+            _shifted.Add(new Shifted { T = t, Orig = t.localPosition, Delta = new Vector3(-pitch / sx, 0f, 0f) });
+        }
+
+        private static void CaptureNeighbours(Transform slotGroup, Transform card, Rect cardRect, float pitch)
         {
             var canvas = slotGroup.GetComponentInParent<Canvas>();
             if (canvas == null) return;
             var root = canvas.rootCanvas != null ? canvas.rootCanvas.transform : canvas.transform;
-            // Strip directly left of the card, one card wide, same height band.
-            float minX = cardRect.xMin - cardRect.width, maxX = cardRect.xMin + 10f;
-            float minY = cardRect.yMin - 20f, maxY = cardRect.yMax + 20f;
-            var skip = new HashSet<Transform>();
-            foreach (var kv in _cardParts) { if (kv.Key != null) skip.Add(kv.Key.transform); if (kv.Value != null) skip.Add(kv.Value.transform); }
+            // Grenade / unequip / drop hints occupy the strip immediately left of the native card.
+            var zone = new Rect(cardRect.xMin - cardRect.width, cardRect.yMin - 20f, cardRect.width + 10f, cardRect.height + 40f);
             var cands = new List<Transform>();
             foreach (var t in root.GetComponentsInChildren<RectTransform>(true))
             {
-                if (t == root || skip.Contains(t) || t.name.EndsWith("_apocapocket")) continue;
-                if (t == slotGroup || t.IsChildOf(slotGroup) || slotGroup.IsChildOf(t) || card.IsChildOf(t)) continue;
-                bool insideClone = false;
-                foreach (var sk in skip) if (t.IsChildOf(sk)) { insideClone = true; break; }
-                if (insideClone) continue;
+                if (t == root || t.name.EndsWith("_apocapocket") || NativeWidget(t) || t.IsChildOf(card) || card.IsChildOf(t)) continue;
+                bool slotPart = false;
+                foreach (var sh in _shifted)
+                    if (t == sh.T || t.IsChildOf(sh.T) || sh.T.IsChildOf(t)) { slotPart = true; break; }
+                if (slotPart) continue;
                 var r = VisualRect(t);
                 if (r.width <= 0f || r.height <= 0f) continue;
                 if (r.width > cardRect.width * 1.2f || r.height > cardRect.height * 1.5f) continue;
-                var c = r.center;
-                if (c.x < minX || c.x > maxX || c.y < minY || c.y > maxY) continue;
+                if (!zone.Contains(r.center)) continue;
                 cands.Add(t);
             }
             var set = new HashSet<Transform>(cands);
-            var sb = new System.Text.StringBuilder("UI moved aside while slots 4-6 are shown:");
+            var sb = new System.Text.StringBuilder("Left-side hints move left as the slot card grows:");
             foreach (var t in cands)
             {
-                if (t.parent != null && set.Contains(t.parent)) continue;   // its parent moves it already
-                float sx = t.parent != null ? Mathf.Max(0.0001f, t.parent.lossyScale.x) : 1f;
-                _shifted.Add(new Shifted { T = t, Orig = t.localPosition, Delta = new Vector3(-worldShift / sx, 0f, 0f) });
+                bool ancestorMoves = false;
+                for (var p = t.parent; p != null; p = p.parent) if (set.Contains(p)) { ancestorMoves = true; break; }
+                if (ancestorMoves) continue;
+                TrackShift(t, pitch);
                 var r = VisualRect(t);
                 sb.Append("\n  ").Append(Path(t)).Append(t.gameObject.activeInHierarchy ? "" : " (inactive)").Append(" x=").Append(r.xMin.ToString("0")).Append(" w=").Append(r.width.ToString("0"));
             }
             Plugin.V(sb.ToString());
+        }
+
+        private static bool NativeWidget(Transform t)
+        {
+            for (int i = 0; i < 3; i++)
+                foreach (var graphic in new Graphic[] { _gameImg[i], _gameFrame[i] })
+                    if (graphic != null && (t == graphic.transform || t.IsChildOf(graphic.transform) || graphic.transform.IsChildOf(t))) return true;
+            return false;
         }
 
         /// Where a UI element is actually drawn. Text boxes in this game are often far wider than their text (1000 px boxes with
@@ -255,25 +333,24 @@ namespace Apocapocket
             return new Rect(x, y, w, h);
         }
 
-        private static void ApplyShift(bool on)
+        private static void ApplyShift(int slots)
         {
             foreach (var sh in _shifted)
             {
                 if (sh.T == null) continue;
-                var want = on ? sh.Orig + sh.Delta : sh.Orig;
+                var want = sh.Orig + sh.Delta * slots;
                 if (sh.T.localPosition != want) sh.T.localPosition = want;
             }
-            _shiftOn = on;
         }
 
         /// Mod disabled: hide every extra-slot object and put the game's UI back where it was.
         internal static void HideAll()
         {
-            ApplyShift(false);
+            ApplyShift(0);
+            ExtendBackground(0);
             for (int i = 0; i < Max; i++) foreach (var go in _uiRoots[i]) if (go != null && go.activeSelf) go.SetActive(false);
-            foreach (var kv in _cardParts) if (kv.Value != null && kv.Value.activeSelf) kv.Value.SetActive(false);
+            foreach (var part in _decorations) if (part.Clone != null && part.Clone.activeSelf) part.Clone.SetActive(false);
         }
-        private static readonly List<KeyValuePair<GameObject, GameObject>> _cardParts = new List<KeyValuePair<GameObject, GameObject>>();
 
         private static Rect WorldRect(Transform t)
         {
@@ -349,12 +426,13 @@ namespace Apocapocket
         internal static void UpdateUi(Func<int, GameObject> itemInSlot, int selected)
         {
             int active = Active;
-            ApplyShift(active > 0);
-            foreach (var kv in _cardParts)
+            ApplyShift(active);
+            ExtendBackground(active);
+            foreach (var part in _decorations)
             {
-                if (kv.Value == null) continue;
-                bool showPart = active > 0 && kv.Key != null && kv.Key.activeSelf;
-                if (kv.Value.activeSelf != showPart) kv.Value.SetActive(showPart);
+                if (part.Clone == null) continue;
+                bool show = part.Slot < active && part.Source != null && part.Source.activeSelf;
+                if (part.Clone.activeSelf != show) part.Clone.SetActive(show);
             }
             for (int i = 0; i < Max; i++)
             {

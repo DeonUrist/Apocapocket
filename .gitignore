@@ -3,6 +3,8 @@ bin/
 obj/
 *.dll
 *.pdb
+verification/*.exe
+verification/.unity-project/
 *.user
 .vs/
 .vscode/

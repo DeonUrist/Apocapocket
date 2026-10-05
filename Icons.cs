@@ -1,16 +1,25 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.RegularExpressions;
+using BepInEx;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.UI;
 
 namespace Apocapocket
 {
-    /// Renders a small snapshot of an item's model into a texture (once per prefab name, cached for the session)
+    /// Native textures first; missing snapshots are queued, versioned and cached on disk.
     /// and shows it in the game's slot icon (RawImage "Image_1/2/3").
     internal static class Icons
     {
         private static readonly Dictionary<string, Texture2D> _cache = new Dictionary<string, Texture2D>();
+        internal const int IconVersion = 2;
+        private static readonly Dictionary<string, GameObject> _pending = new Dictionary<string, GameObject>();
+        private static readonly HashSet<string> _failed = new HashSet<string>();
+        private static readonly string CacheDir = Path.Combine(Paths.CachePath, "Apocapocket", "icons");
         private static int _layer = -1;
         private static bool _pipelineChecked, _pipelineOk;
 
@@ -18,32 +27,72 @@ namespace Apocapocket
         {
             string n = go.name;
             int i = n.IndexOf("(Clone)", StringComparison.Ordinal);
-            return i > 0 ? n.Substring(0, i) : n;
+            return Regex.Replace(i > 0 ? n.Substring(0, i) : n, @"\d+$", "");
         }
 
         /// The icon the game itself would show for the item (its imageUI FSM texture: weapons, aid items), else a rendered one.
         internal static Texture IconFor(GameObject item)
         {
-            Texture t;
-            int id = item.GetInstanceID();
-            if (_byInstance.TryGetValue(id, out t) && t != null) return t;
+            if (item == null) return null;
+            Texture t = null;
             var f = Fsms.Find(item, "imageUI");
             if (f != null) { try { var v = f.FsmVariables.GetFsmTexture("imageUI"); if (v != null && v.Value != null) t = v.Value; } catch { } }
             if (t == null) t = Get(item);
-            if (t != null) _byInstance[id] = t;
             return t;
         }
-        private static readonly Dictionary<int, Texture> _byInstance = new Dictionary<int, Texture>();
 
         internal static Texture2D Get(GameObject item)
         {
-            string key = PrefabName(item);
+            string key = PrefabName(item) + "_" + Plugin.IconSize.Value + "_v" + IconVersion;
             Texture2D t;
             if (_cache.TryGetValue(key, out t) && t != null) return t;
-            t = Render(item);
-            _cache[key] = t;
-            return t;
+            if (_failed.Contains(key)) return null;
+            string path = IconPath(key);
+            if (File.Exists(path))
+            {
+                t = new Texture2D(2, 2, TextureFormat.ARGB32, false);
+                try
+                {
+                    if (t.LoadImage(File.ReadAllBytes(path)))
+                    {
+                        _cache[key] = t;
+                        Plugin.V("Loaded icon from disk: " + key);
+                        return t;
+                    }
+                }
+                catch (Exception e) { Plugin.Log.LogWarning("Icon cache read: " + e.Message); }
+                UnityEngine.Object.Destroy(t);
+            }
+            _pending[key] = item;
+            return null;
         }
+
+        private static string IconPath(string key)
+        {
+            using (var hash = SHA256.Create())
+                return Path.Combine(CacheDir, BitConverter.ToString(hash.ComputeHash(Encoding.UTF8.GetBytes(key))).Replace("-", "").ToLowerInvariant() + ".png");
+        }
+
+        internal static void Tick(bool gameplayActive)
+        {
+            if (!gameplayActive || _pending.Count == 0) return;
+            string key = null; GameObject item = null;
+            foreach (var pair in _pending) { key = pair.Key; item = pair.Value; break; }
+            _pending.Remove(key);
+            if (item == null) return;
+            var texture = Render(item);
+            if (texture == null) { _failed.Add(key); return; }
+            _cache[key] = texture;
+            try
+            {
+                Directory.CreateDirectory(CacheDir);
+                File.WriteAllBytes(IconPath(key), texture.EncodeToPNG());
+                Plugin.V("Cached icon on disk: " + key);
+            }
+            catch (Exception e) { Plugin.Log.LogWarning("Icon cache write: " + e.Message); }
+        }
+
+        internal static void ResetUi() { for (int i = 0; i < _images.Length; i++) _images[i] = null; _pending.Clear(); }
 
         /// Sets the slot's RawImage to the item's icon; returns false if the image object could not be found.
         internal static bool Apply(int slot, Texture2D tex)
@@ -133,6 +182,7 @@ namespace Apocapocket
                 foreach (var rb in clone.GetComponentsInChildren<Rigidbody>(true)) UnityEngine.Object.DestroyImmediate(rb);
                 foreach (var c in clone.GetComponentsInChildren<Collider>(true)) UnityEngine.Object.DestroyImmediate(c);
                 foreach (var l in clone.GetComponentsInChildren<Light>(true)) UnityEngine.Object.DestroyImmediate(l);
+                foreach (var a in clone.GetComponentsInChildren<AudioSource>(true)) UnityEngine.Object.DestroyImmediate(a);
                 var bounds = new Bounds(far, Vector3.zero);
                 bool any = false;
                 foreach (var r in clone.GetComponentsInChildren<Renderer>(true))

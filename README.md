@@ -1,70 +1,55 @@
-# Apocapocket
+# Apocapocket 2.0.0
 
-**Item slots** for Apocalypter (BepInEx 5 plugin): the weapon slots 1 / 2 / 3 also hold ordinary hand-carried items, and a
-backpack adds up to three item-only slots 4 / 5 / 6.
+Six item and weapon slots for Apocalypter (Unity 2020.3, BepInEx 5, PlayMaker).
 
-## Features
+## Controls and slots
 
-- Holding an item and pressing **1 / 2 / 3** on an empty slot pockets it there (hidden, frozen, out of the way), leaving you
-  empty-handed. The slot shows a rendered icon of the item.
-- Pressing the key of a slot that holds a pocketed item puts it back in your hands through the game's own grab logic, at the
-  position it had when you stored it (drop / throw / rotate / scroll work as usual).
-- Pressing the item's own key again, or **Weapon off**, hides it back into its slot (a world-picked item goes to the first free
-  slot; if there is none it is dropped). Switching to another slot while holding an item that cannot go back drops it.
-- Slots holding weapons behave exactly as before; a slot with an item counts as occupied for weapon pickups.
-- Pocketed items survive saves/loads (they are stored the same way as holstered weapons). Slot keys are ignored in third person
-  (vehicle camera). Disabling the mod ejects every pocketed item in front of you.
-- **Extra slots 4 / 5 / 6**, shown on a second slot card to the left of 1-3. They are unlocked by the backpack
-  you wear (cumulative): small = slot 4, medium = 4-5, large / huge = 4-6. Items go in and out exactly like in slots 1-3.
-  Weapons make them **extra holsters**: a gun in your hand goes into an empty slot 4-6 with its key; pressing the key of a
-  slot that holds a gun draws it and it stays that slot's gun (its key again, Weapon off, another slot key or dropping
-  it holsters it back there); pressing the key of an empty slot 4-6 while a weapon is drawn moves it there.
-  Anything in a slot that becomes locked (backpack taken off or swapped for a smaller one) or that sits in slots 4-6 while
-  the mod is disabled is thrown out in front of you, weapons included; so is anything an older save left under the
-  slot holders that no slot owns.
-  While slots 4-6 are visible, the Unequip / Drop / Grenade hints move left out of their way.
-- The game's **Controls** screen shows the slot keys as **Item 1 / 2 / 3** and adds **Item 4 / 5 / 6** right below them;
-  rebinding there is saved to this mod's config (and config edits show up there).
-- Optional: with [Apocasaver](../Apocasaver) 1.4+ installed, the hand pose of pocketed items is saved with the game, so they come
-  out where you left them after a load. Apocasaver also keeps the item in your *hand* across saves.
-- Opt-in entry in the [Apocasetter](../Apocasetter) Mods menu (no dependency on it).
+- Hold an item or weapon and press an empty slot's key to store it. Press an occupied item slot to take its item into your hand at its recorded pose.
+- Selecting a weapon draws it; pressing its key again holsters it. Empty slots can be selected with bare hands.
+- Switching while holding an item returns it to its origin, another free slot, or the world if all slots are occupied. **Weapon off** uses the same return rule.
+- **Use / F** picks up weapons into the first empty logical slot in order 1–6. Items occupy slots too. A weapon picked up into the selected empty slot is drawn automatically.
+- Small / medium / large / huge backpacks unlock 1 / 2 / 3 / 3 extra slots. Removing or downsizing a backpack ejects overflow after 1.5 seconds of stable gameplay.
+- The original slot card shows **1–4**, **1–5**, then **1–6**, keeping numerical order and its right edge fixed beside the ammo/values panel. Added width extends left and moves the slot row and grenade/drop/unequip hints left. Its middle texture repeats at the original scale and its end caps stay intact; locked slot widgets are hidden.
+- Slots 4–6 draw weapons through the game's three native weapon slots. Their logical contents remain unchanged during borrowing; the displaced native content is parked separately.
+- Vehicle third-person and menus gate new input. Existing transactions keep advancing and have explicit rollback. Slot 4–6 keys are ignored in vehicles.
+- The Controls screen labels the keys **Item 1–6**. Extra key bindings persist in `com.denis.apocalypter.apocapocket.keys.cfg`.
 
-## Installation
+Merchant stock, PartAdjusterTools, crates and objects containing other saveable items cannot be pocketed.
 
-Install [BepInEx 5.x](https://github.com/BepInEx/BepInEx/releases) (win_x64), run the game once, then copy `Apocapocket.dll` to
-`BepInEx\plugins\`.
+## Saves and icons
 
-Config: `BepInEx\config\com.denis.apocalypter.apocapocket.cfg` (also editable in the Apocasetter Mods menu)
+Inventory mappings and hand poses are stored under **Apocapocket.Slots** inside the game's `.es3` save. During serialization, ordinary items and extra-slot weapons are visible, physical world items at the player's drop point. Native-slot weapons retain their vanilla representation. Inventory is restored after serialization. Loading the same save with the plugin disabled leaves the extra items in the world.
 
-| Section / key | Default | Description |
+The mapping is written to the ES3 cache immediately before `NewGO_ArrayList` executes its `StoreCachedFile` actions, then written and verified in both cache and file after the save. A saved vanilla Timeline value detects stale mapping keys retained by vanilla re-saves. Legacy 1.x holder reference IDs remain registered in this migration release only; new item saves do not use those parents.
+
+Weapons and items with native `imageUI` textures use those textures. Other icons are queued one per gameplay frame and cached in `BepInEx/cache/Apocapocket/icons`. Deleting this cache only regenerates icons. There are no external inventory save files.
+
+Optional Apocasaver integration shares item hand poses. Hand-carried items during a save remain under vanilla/Apocasaver handling.
+
+## Installation and configuration
+
+Install `Apocapocket.dll` in `BepInEx/plugins/Apocapocket`. Keep only one copy of the DLL. Restart the game after replacing it.
+
+The plugin GUID remains `com.denis.apocalypter.apocapocket`.
+
+| Setting | Default | Behavior |
 | --- | --- | --- |
-| `[General] Enabled` | `true` | Turn the item slots on/off (off = vanilla keys; everything kept in slots 4-6 is dropped in front of you) |
-| `[General] RequireBackpack` | `true` | Slots 4-6 are unlocked by the worn backpack: small = 4, medium = 4-5, large / huge = 4-6 (off = always available) |
-| `[Debug] VerboseLog` | `false` | Log every step (debugging only) |
+| `[General] Enabled` | true | Disable to eject ordinary pocketed items and extra-slot weapons, hide extra UI and restore vanilla input. Native-slot weapons stay. |
+| `[General] RequireBackpack` | true | Disable to unlock all six slots. |
+| `[Debug] VerboseLog` | false | Enable transaction phases, model snapshots, mapping JSON and icon-cache messages. |
 
-The keys for slots 4-6 are rebound in the game's **Controls** screen (rows "Item 4/5/6"); they are stored in
-`com.denis.apocalypter.apocapocket.keys.cfg`. Everything else (icon size, pocket blacklist — crates, PartAdjusterTools —, hand
-pose defaults, fallback keys) is built in since 1.5.0; old config files are cleaned up automatically on the first start.
+The existing Apocasetter menu integration and old configuration migration are retained.
 
-## Building
+## Build and verify
 
-- `dotnet build` (override the game path with `-p:GameDir=...`); deploys to `BepInEx\plugins` after build, or
-- `./build.sh` with mono `mcs` (`MANAGED` / `BEPCORE` env vars).
+Windows, using the installed Unity Mono compiler and the game's own managed assemblies:
 
-## How it works
+```powershell
+./build.ps1
+./verify.ps1
+./build.ps1 -Deploy
+```
 
-Everything runs through the game's own PlayMaker FSMs. Storing replays the `takeWeapon` recipe the game uses for holstering
-(`not_Hold` to `GrabItem`, parent under `Slot N`, renderers/colliders off, rigidbody frozen); taking out holsters a drawn weapon,
-parents the item under the `GrabItem` FSM's `Hand`, sets its `Item` variable and switches the FSM to its `Grab` state. A Harmony
-prefix on `GetButtonDown` keeps the game's own weapon-key handling away from slots that hold items. Pocketed items keep the
-game's `LockPhysics` FSM parked in `off` every frame (entering a vehicle pokes it and it would glue the item to the car), and an
-item that is moved out of its slot by anything else is put straight back. Icons are rendered once per item type from a stripped
-copy of the item with a private camera and cached for the session (weapons show the game's own `imageUI` icon). Slots 4-6
-are holder objects under `PlayerCamera` (registered with Easy Save under fixed reference ids, so their contents save like
-slots 1-3); their UI is cloned from the game's slot widgets and card. The game's draw pipeline (`Weapons` FSM state
-`Slot N`, `WeaponInHand`, the slot's `UseWeapon`/`DropWeapon` FSMs) is hard-wired to the three `Slot` objects, so a weapon
-kept in slot 4-6 borrows a game slot while it is drawn (the game's `SlotEmptyFull` FSM then treats it as holstered and the
-`Weapons` FSM is switched to that slot); the game slot's own content is parked in the extra slot meanwhile and the UI
-keeps showing both where they belong. As soon as the `Weapons` FSM leaves that slot state, or the weapon leaves the slot
-(dropped), everything moves back. A save made while a gun is drawn from slot 4-6 stores it in the borrowed slot 1-3. The Item 4-6 controls are extra `KeyAction`s in the game's InsaneSystems InputManager storage,
-re-added on every start.
+Override `-GameDir` or `-MonoDir` when needed. Builds use **mcs, C# 7, -nostdlib**. `build.sh` provides the equivalent build for a shell with `mcs` on PATH.
+
+`verify.ps1` executes the production inventory, transaction and persistence code through headless Unity/PlayMaker/ES3 adapters, then applies every Harmony patch against the actual game assemblies and checks plugin metadata. See [VALIDATION.md](VALIDATION.md) for coverage and the outstanding game acceptance checks.
