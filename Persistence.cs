@@ -228,9 +228,9 @@ namespace Apocapocket
                 if (run.Slots[index].Content != null && run.Slots[index].Content != item) { Plugin.Log.LogWarning("Load: duplicate slot " + entry.slot); continue; }
                 var slot = Runner.Capture(item);
                 slot.Position = entry.position; slot.Rotation = entry.rotation; slot.HasPose = entry.hasPose; slot.Layer = entry.layer;
-                if (!Plugin.Enabled.Value || index >= run.Unlocked)
+                if (!Plugin.Enabled.Value)
                 {
-                    if (index >= 3 || slot.Kind == Kind.Item) run.MakeWorld(slot, index, false);
+                    if (index >= 3 || slot.Kind == Kind.Item) { Plugin.Log.LogInfo("Load: " + item.name + " from slot " + entry.slot + " to the world (mod disabled)"); run.MakeWorld(slot, index, false); }
                     continue;
                 }
                 run.Slots[index] = slot; run.Pocket(slot, run.Refs.Slots[index]);

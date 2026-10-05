@@ -73,7 +73,7 @@ namespace Apocapocket
         private int _handOrigin = -1;
         private string _handName;
         private GameObject _guardedHand;
-        private float _scanAt, _lockSince;
+        private float _scanAt, _lockSince, _lockGraceUntil;
         private int _backpack = -1, _useFrame = -1;
         private bool _wasEnabled;
         private PlayMakerFSM _vehicleCam;
@@ -144,7 +144,7 @@ namespace Apocapocket
 
             Reconcile();
             GuardHand();
-            if (_backpack >= 0 && GameplayActive() && Time.unscaledTime - _lockSince >= 1.5f && CurrentOp == null)
+            if (_backpack >= 0 && GameplayActive() && Time.unscaledTime - _lockSince >= 1.5f && Time.unscaledTime >= _lockGraceUntil && CurrentOp == null)
             {
                 bool overflow = false;
                 for (int i = Unlocked; i < 6; i++) if (Slots[i].Content != null) overflow = true;
@@ -227,7 +227,15 @@ namespace Apocapocket
             _handOrigin = -1; _handName = null; _guardedHand = null;
             for (int i = 0; i < 6; i++) Slots[i] = new SlotState();
         }
-        internal void EjectLockedAfterLoad() { if (!Plugin.Enabled.Value) EjectRange(0, "loaded while disabled"); else EjectRange(Unlocked, "load overflow"); }
+        /// After a load only the "mod disabled" case ejects. Slots above the backpack's capacity are NOT judged here: the worn
+        /// backpack is a saved item restored in the same load and may not be under QuickItems/Backpack_Item yet, which made
+        /// 2.0.0/2.0.1 see "no backpack" and throw slots 4-6 out. The normal in-game lock rule decides later (grace below).
+        internal void EjectLockedAfterLoad()
+        {
+            if (!Plugin.Enabled.Value) { EjectRange(0, "loaded while disabled"); return; }
+            _lockSince = Time.unscaledTime; _lockGraceUntil = Time.unscaledTime + 5f;
+            Plugin.Log.LogInfo("Load: slots restored (backpack extra slots seen now: " + ExtraSlots.Unlocked + "; lock check in 5 s)");
+        }
         private void BeginOperation(Op op)
         {
             CurrentOp = op;

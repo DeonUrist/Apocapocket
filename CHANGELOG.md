@@ -1,3 +1,7 @@
+# Apocapocket 2.0.2
+
+- Fix: items in slots 4-6 no longer fly out when a save is loaded. The load restored the slots before the worn backpack was back on the character, so slots 4-6 counted as locked. Slots are now always restored, and the backpack lock check runs 5 s after the load during normal play (taking the backpack off still drops slots 4-6 as before).
+
 # Apocapocket 2.0.1
 
 - Fix: items taken out of a slot can be attached to cars again (spikes, bumpers and other attachables). Storing an item switches off its `Attach`/`CheckBool` FSMs; 2.0.0 never switched them back on when the item came back into the hand.
