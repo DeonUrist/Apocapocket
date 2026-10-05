@@ -125,6 +125,7 @@ namespace Apocapocket
             Save.Tick(this);
             if (Save.Loading || Save.Normalised) return;
 
+            RepairHeldAttach();
             bool enabled = Plugin.Enabled.Value;
             if (!enabled)
             {
@@ -368,10 +369,31 @@ namespace Apocapocket
             item.layer = slot.Layer;
             var rb = EnsureBody(item); rb.isKinematic = false; rb.useGravity = false;
             ParkLock(item, false);
+            // Pocket() switched these off (takeWeapon recipe); without them a taken-out attachable (spikes, bumpers...)
+            // can no longer be attached to a car.
+            EnableFsm(item, "Attach", true); EnableFsm(item, "CheckBool", true);
             RestartGuard.Set(item, true);
             var iv = Refs.Grab.FsmVariables.GetFsmGameObject("Item"); if (iv != null) iv.Value = item;
             var nv = Refs.Grab.FsmVariables.GetFsmString("ItemInHandName"); if (nv != null) nv.Value = "";
             Refs.Grab.Fsm.SetState("Grab");
+        }
+
+        /// Items taken out by 2.0.0 kept their Attach/CheckBool FSMs disabled even after being dropped (and saved that way).
+        /// Anything in the hand is detached by definition, so re-enable them when the player holds such an item again.
+        private GameObject _attachChecked;
+        private void RepairHeldAttach()
+        {
+            var held = HeldItem();
+            if (held == _attachChecked) return;
+            _attachChecked = held;
+            if (held == null) return;
+            bool fixedAny = false;
+            foreach (var n in new[] { "Attach", "CheckBool" })
+            {
+                var f = Fsms.Find(held, n);
+                if (f != null && !f.enabled) { f.enabled = true; fixedAny = true; }
+            }
+            if (fixedAny) Plugin.Log.LogInfo("Re-enabled Attach/CheckBool on " + held.name + " (left disabled by 2.0.0)");
         }
 
         private void Finish()

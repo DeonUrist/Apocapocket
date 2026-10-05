@@ -1,3 +1,8 @@
+# Apocapocket 2.0.1
+
+- Fix: items taken out of a slot can be attached to cars again (spikes, bumpers and other attachables). Storing an item switches off its `Attach`/`CheckBool` FSMs; 2.0.0 never switched them back on when the item came back into the hand.
+- Attachables already taken out with 2.0.0 (and saved that way) are repaired automatically the next time you pick them up.
+
 # Apocapocket 2.0.0
 
 Six logical slots now hold items and weapons, with explicit inventory transactions and rollback when a game operation times out.
