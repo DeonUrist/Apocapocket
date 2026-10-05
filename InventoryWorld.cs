@@ -299,7 +299,7 @@ namespace Apocapocket
             for (int i = 0; i < (migrate ? 6 : 3); i++)
             {
                 if (Borrow != null && (Borrow.Host == i || Borrow.Logical == i) || Slots[i].Content != null) continue;
-                GameObject item = ChildItem(Refs.Slots[i]);
+                GameObject item = SlotChild(Refs.Slots[i]);
                 if (item == null || !migrate && !IsWeapon(item)) continue;
                 if (migrate && (!IsWeapon(item) || i >= 3))
                 {
@@ -310,6 +310,16 @@ namespace Apocapocket
                 if (Plugin.Enabled.Value) Pocket(Slots[i], Refs.Slots[i]);
             }
         }
+        /// Content of a slot holder / game slot: anything with a Rigidbody or Collider counts (the slot belongs to this mod or
+        /// the game's weapon slots, so no item-FSM requirement - an empty alcohol canister has only an ID FSM).
+        internal static GameObject SlotChild(Transform parent)
+        {
+            if (parent == null) return null;
+            foreach (Transform t in parent)
+                if (t.GetComponent<Rigidbody>() != null || t.GetComponent<Collider>() != null || IsWeapon(t.gameObject)) return t.gameObject;
+            return null;
+        }
+
         internal static GameObject ChildItem(Transform parent)
         {
             if (parent == null) return null;

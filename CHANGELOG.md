@@ -1,3 +1,9 @@
+# Apocapocket 2.0.5
+
+- Fix: items without the game's usual item scripts (e.g. the empty alcohol canister, which has only an ID script) are restored to their slot on load instead of staying on the ground ("Load: missing pocket item ..."). The restore now looks up every saved scene object by its exact name.
+- Same-named objects: the one lying where the save put it is taken; if several match (or none), nothing is taken and a warning explains why.
+- Slot contents left in a slot after a load are recognised without the item-script requirement as well.
+
 # Apocapocket 2.0.4
 
 - Fix: slots 1-6 are really restored when a save is loaded (2.0.0-2.0.2 left pocketed items lying on the ground). Three bugs, all in the save code:

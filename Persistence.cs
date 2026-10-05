@@ -252,19 +252,35 @@ namespace Apocapocket
             // Stale-mapping guard (a later save written without Apocapocket can keep this key in the ES3 cache): an entry only
             // owns an item that still lies where the save put it. (2.0.0-2.0.2 compared the save's Timeline with the LIVE clock
             // 0.5 s after load, which always differed.)
-            var objects = new Dictionary<string, GameObject>(StringComparer.Ordinal);
-            foreach (var f in Resources.FindObjectsOfTypeAll<PlayMakerFSM>())
-                if (f != null && f.gameObject.scene.IsValid() && (f.FsmName == "ItemName" || f.FsmName == "saveItemVar" || f.FsmName == "weaponType")) objects[f.gameObject.name] = f.gameObject;
+            // Candidates by exact name among ALL loaded scene objects that look like saved items (Rigidbody or Collider).
+            // 2.0.0-2.0.4 required an ItemName/saveItemVar/weaponType FSM, so items with only an ID FSM (empty alcohol canister)
+            // were "missing" and stayed in the world. Prefab assets (no loaded scene), hidden objects and stripped icon copies
+            // (no Rigidbody/Collider) are excluded.
+            var wanted = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var raw in map.entries) { var e = SaveSlot.Decode(raw); if (e != null && !string.IsNullOrEmpty(e.name)) wanted.Add(e.name); }
+            var objects = new Dictionary<string, List<GameObject>>(StringComparer.Ordinal);
+            foreach (var t in Resources.FindObjectsOfTypeAll<Transform>())
+            {
+                if (t == null) continue;
+                var go = t.gameObject;
+                if (!wanted.Contains(go.name) || !go.scene.IsValid() || !go.scene.isLoaded) continue;
+                if ((go.hideFlags & (HideFlags.HideInHierarchy | HideFlags.DontSave)) != 0) continue;
+                if (go.GetComponent<Rigidbody>() == null && go.GetComponent<Collider>() == null) continue;
+                List<GameObject> list;
+                if (!objects.TryGetValue(go.name, out list)) objects[go.name] = list = new List<GameObject>();
+                if (!list.Contains(go)) list.Add(go);
+            }
             var used = new HashSet<string>(StringComparer.Ordinal);
             foreach (var raw in map.entries)
             {
                 var entry = SaveSlot.Decode(raw);
                 if (entry == null || entry.slot < 1 || entry.slot > 6 || string.IsNullOrEmpty(entry.name) || !used.Add(entry.name)) continue;
-                GameObject item;
-                if (!objects.TryGetValue(entry.name, out item)) { Plugin.Log.LogWarning("Load: missing pocket item " + entry.name); continue; }
-                if (entry.hasWorld && FlatDistance(item.transform.position, entry.world) > 2f)
-                { Plugin.Log.LogInfo("Load: " + item.name + " moved since the slot mapping was saved (save written without Apocapocket?); left in the world"); continue; }
                 int index = entry.slot - 1;
+                List<GameObject> found;
+                if (!objects.TryGetValue(entry.name, out found) || found.Count == 0) { Plugin.Log.LogWarning("Load: missing pocket item " + entry.name); continue; }
+                string why;
+                var item = PickCandidate(entry, found, run.Refs.Slots[index], out why);
+                if (item == null) { Plugin.Log.LogWarning("Load: " + entry.name + " (slot " + entry.slot + ") not restored: " + why); continue; }
                 if (run.Slots[index].Content != null && run.Slots[index].Content != item) { Plugin.Log.LogWarning("Load: duplicate slot " + entry.slot); continue; }
                 var slot = Runner.Capture(item);
                 slot.Position = entry.position; slot.Rotation = entry.rotation; slot.HasPose = entry.hasPose; slot.Layer = entry.layer;
@@ -304,6 +320,27 @@ namespace Apocapocket
         }
         private static ES3Settings Settings(string path, ES3.Location location)
         { var s = new ES3Settings(path); s.location = location; return s; }
+        /// Which of the same-named scene objects an entry owns. Items laid in the world for the save (hasWorld) must lie within
+        /// 2 m (XZ) of that spot - also the stale-mapping guard; more than one that close = ambiguous, nothing is taken.
+        /// Weapons that stayed in a game slot (no world position): the one under that slot, else the only candidate.
+        internal static GameObject PickCandidate(SaveSlot entry, List<GameObject> found, Transform slotParent, out string why)
+        {
+            why = null;
+            if (entry.hasWorld)
+            {
+                GameObject best = null; int near = 0;
+                foreach (var go in found) if (FlatDistance(go.transform.position, entry.world) <= 2f) { near++; best = go; }
+                if (near == 1) return best;
+                why = near == 0 ? "it moved since the slot mapping was saved (save written without Apocapocket?); left in the world"
+                                : near + " objects with that name lie at the saved spot (ambiguous)";
+                return null;
+            }
+            if (slotParent != null) foreach (var go in found) if (go.transform.parent == slotParent) return go;
+            if (found.Count == 1) return found[0];
+            why = found.Count + " objects with that name and none in its slot (ambiguous)";
+            return null;
+        }
+
         /// Horizontal distance: the items were saved at the drop point and may have fallen / settled a little before the restore.
         private static float FlatDistance(Vector3 a, Vector3 b) { a.y = 0f; b.y = 0f; return Vector3.Distance(a, b); }
 
