@@ -1,3 +1,11 @@
+# Apocapocket 2.0.7
+
+- Weapon watchdog: fixes the "weapon hints on screen, nothing in the hands, can't change weapon" lock-up within about 3-5 seconds. The game's weapon logic can get stuck after a grenade, bandage, food or a held item (it waits for a weapon to come back but has none recorded), or keep weapons away because of a held item that is gone or invisible. The watchdog checks once a second (negligible cost), repairs the hand or puts the weapon back / holsters it, and writes a "Weapon watchdog:" line to the log. It never acts in vehicles, menus, during saves/loads or while a slot change is in progress.
+
+# Apocapocket 2.0.6
+
+- Slot 4-6 keys work in vehicles too (first and third person), like the game's slots 1-3.
+
 # Apocapocket 2.0.5
 
 - Fix: items without the game's usual item scripts (e.g. the empty alcohol canister, which has only an ID script) are restored to their slot on load instead of staying on the ground ("Load: missing pocket item ..."). The restore now looks up every saved scene object by its exact name.

@@ -116,7 +116,7 @@ namespace Apocapocket
                     CurrentOp = null; _queued = null; Borrow = null; Selected = -1;
                     _handOrigin = -1; _handName = null; _backpack = -1;
                     for (int i = 0; i < 6; i++) Slots[i] = new SlotState();
-                    ExtraSlots.ResetUi(); Icons.ResetUi(); Save.NewPlayer();
+                    ExtraSlots.ResetUi(); Icons.ResetUi(); Save.NewPlayer(); ResetWatchdog();
                     AdoptVanilla(true);
                 }
                 if (!Ready) return;
@@ -143,6 +143,7 @@ namespace Apocapocket
             else if (_queued != null && GameplayActive()) { var next = _queued; _queued = null; BeginOperation(next); }
 
             Reconcile();
+            Watchdog();
             GuardHand();
             if (_backpack >= 0 && GameplayActive() && Time.unscaledTime - _lockSince >= 1.5f && Time.unscaledTime >= _lockGraceUntil && CurrentOp == null)
             {
@@ -192,8 +193,8 @@ namespace Apocapocket
             int target = -1;
             for (int i = 0; i < 3; i++) if (ButtonDown("Weapon " + (i + 1), i == 0 ? Key.Digit1 : i == 1 ? Key.Digit2 : Key.Digit3)) target = i;
             if (ButtonDown("Weapon off", Key.None)) target = -2;
-            if (Refs.InCar == null || State(Refs.InCar) == "OnFoot")
-                for (int i = 0; i < ExtraSlots.Active; i++) if (Keybinds.Down(i)) target = i + 3;
+            // Slot 4-6 keys work in vehicles too (first and third person), like the game's slots 1-3.
+            for (int i = 0; i < ExtraSlots.Active; i++) if (Keybinds.Down(i)) target = i + 3;
             if (target == -1) return;
             HandleKey(target);
         }

@@ -406,7 +406,9 @@ namespace Apocapocket
         {
             if (!Ready || Save.Loading || Save.Normalised || Time.timeScale <= 0f) return false;
             if (Refs.Menu != null && State(Refs.Menu) != "play") return false;
-            if (ThirdPerson()) return false;
+            // 2.0.0-2.0.5 also refused everything in the vehicle third-person camera (ThirdPerson()), so slots 4-6 were dead
+            // there while the game's own slots 1-3 kept working. What matters is only that the weapon/grab FSMs are running.
+            if (!Refs.Grab.gameObject.activeInHierarchy || Refs.Weapons != null && !Refs.Weapons.gameObject.activeInHierarchy) return false;
             if (Refs.GrabPause != null) { var b = Refs.GrabPause.FsmVariables.GetFsmBool("GrabItem_Pause"); if (b != null && b.Value) return false; }
             return true;
         }
