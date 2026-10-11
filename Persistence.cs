@@ -63,11 +63,10 @@ namespace Apocapocket
         internal bool Busy { get { return Loading || Normalised; } }
         private PlayMakerFSM _fsm;
         private bool _saving, _loadSeen, _seenPlay, _waitForRegistry, _cacheFlushed;
-        private float _deadline, _flushAt = -1f, _loadAt = -1f;
+        private float _deadline, _flushAt = -1f, _loadAt = -1f, _restoreUntil = -1f;
         private string _json, _file;
         private string _requestedLoadFile;
         private int _selected = -1;
-        private readonly List<string> _loadPaths = new List<string>();
         private readonly Dictionary<GameObject, Vector3> _worldPositions = new Dictionary<GameObject, Vector3>();
         private int _writeTries;
 
@@ -139,10 +138,8 @@ namespace Apocapocket
                 if (run.Ready) { run.Rollback("load"); run.EndBorrowNow(); }
                 // Prevent the old character's delayed write from touching the new slot.
                 _flushAt = -1f; _json = null; _file = null; _saving = false; Normalised = false;
-                _worldPositions.Clear(); _loadPaths.Clear();
+                _worldPositions.Clear(); _restoreUntil = -1f;
                 if (state != "LoadGame") _requestedLoadFile = null;
-                if (!string.IsNullOrEmpty(_requestedLoadFile)) _loadPaths.Add(_requestedLoadFile);
-                foreach (var path in Candidates()) _loadPaths.Add(path);
                 Loading = true; _loadSeen = state == "LoadGame"; _seenPlay = false;
                 _loadAt = -1f;
                 run.ResetForLoad();
@@ -171,6 +168,9 @@ namespace Apocapocket
         internal void BeginSave(Runner run)
         {
             if (_saving || !run.Ready) return;
+            // The pause menu can save while inventory input is waiting for native items.
+            // Resolve the available loaded inventory before replacing its saved mapping.
+            if (Loading && _loadSeen) { _restoreUntil = Time.unscaledTime; RestoreLoad(run); }
             // Finish the preceding write before replacing its snapshot (rapid successive saves).
             if (_flushAt >= 0f) { WriteMapping(_file, _json); _flushAt = -1f; }
             _selected = run.Selected;
@@ -220,39 +220,36 @@ namespace Apocapocket
 
         private void RestoreLoad(Runner run)
         {
-            Loading = false;
+            // Start/setSeed and initial player discovery are not a load. defaultSettings
+            // can still name the previous character's slot in those cases.
+            if (!_loadSeen) { FinishLoad(); run.AdoptVanilla(true); run.EjectLockedAfterLoad(); return; }
+            if (_restoreUntil < 0f) _restoreUntil = Time.unscaledTime + 5f;
             string json = null;
-            // The loaded slot = ES3Settings.defaultSettings.path once the game is in play (what Apocasaver, Immersive Map and
-            // Apocapatrol use). 2.0.0-2.0.3 tried NewGO_ArrayList/SaveLoadGame "SaveFile" first; those variables are stale
-            // (SaveGame1/another slot), so the mapping was read from the WRONG save and nothing was restored.
-            var loadPaths = new List<string>();
+            // Without an explicit button, use ES3's current path in play. The native
+            // SaveFile FSM variables can still name a different character.
             string current = null;
             try { current = ES3Settings.defaultSettings.path; } catch { }
-            if (!string.IsNullOrEmpty(current)) loadPaths.Add(current);
-            if (!string.IsNullOrEmpty(_requestedLoadFile) && !loadPaths.Contains(_requestedLoadFile)) loadPaths.Add(_requestedLoadFile);
-            Plugin.V("Load: reading slot mapping from " + string.Join(", ", loadPaths.ToArray()));
-            foreach (var path in loadPaths)
-            {
-                if (TryRead(path, out json)) { _file = path; break; }
-                // Do not use another slot's mapping when the actual loaded save has no mod key.
-                if (File.Exists(Settings(path, ES3.Location.File).FullPath)) break;
-            }
-            _loadPaths.Clear();
-            _requestedLoadFile = null;
-            if (json == null) { run.AdoptVanilla(true); run.EjectLockedAfterLoad(); return; }
+            // An explicit load button identifies the selected character even while ES3's
+            // default path still points at a previous slot. Never fall back to another slot.
+            string selected = !string.IsNullOrEmpty(_requestedLoadFile) ? _requestedLoadFile : current;
+            _requestedLoadFile = selected; // Pin the same character across delayed retries.
+            Plugin.V("Load: reading slot mapping from " + selected);
+            if (TryRead(selected, out json)) _file = selected;
+            if (json == null) { FinishLoad(); run.AdoptVanilla(true); run.EjectLockedAfterLoad(); return; }
             SaveMap map;
             try { map = JsonUtility.FromJson<SaveMap>(json); }
-            catch (Exception e) { Plugin.Log.LogWarning("Invalid save slot mapping: " + e.Message); run.AdoptVanilla(true); return; }
+            catch (Exception e) { FinishLoad(); Plugin.Log.LogWarning("Invalid save slot mapping: " + e.Message); run.AdoptVanilla(true); run.EjectLockedAfterLoad(); return; }
             if (map == null || map.version != 3 || map.entries == null)
             {
                 // 2.0.0-2.0.2 mappings never contained their slot list: nothing to restore, the items lie in the world.
                 Plugin.Log.LogInfo("Load: slot mapping version " + (map != null ? map.version : 0) + " has no slot list; items stay where they were saved");
-                run.AdoptVanilla(true); run.EjectLockedAfterLoad(); return;
+                FinishLoad(); run.AdoptVanilla(true); run.EjectLockedAfterLoad(); return;
             }
             // Stale-mapping guard (a later save written without Apocapocket can keep this key in the ES3 cache): an entry only
             // owns an item that still lies where the save put it. (2.0.0-2.0.2 compared the save's Timeline with the LIVE clock
             // 0.5 s after load, which always differed.)
-            // Candidates by exact name among ALL loaded scene objects that look like saved items (Rigidbody or Collider).
+            // Candidates by exact name among loaded scene objects with item physics (including
+            // child colliders), or actual weapons already under the native inventory holders.
             // 2.0.0-2.0.4 required an ItemName/saveItemVar/weaponType FSM, so items with only an ID FSM (empty alcohol canister)
             // were "missing" and stayed in the world. Prefab assets (no loaded scene), hidden objects and stripped icon copies
             // (no Rigidbody/Collider) are excluded.
@@ -265,11 +262,24 @@ namespace Apocapocket
                 var go = t.gameObject;
                 if (!wanted.Contains(go.name) || !go.scene.IsValid() || !go.scene.isLoaded) continue;
                 if ((go.hideFlags & (HideFlags.HideInHierarchy | HideFlags.DontSave)) != 0) continue;
-                if (go.GetComponent<Rigidbody>() == null && go.GetComponent<Collider>() == null) continue;
+                if (go.GetComponent<Rigidbody>() == null && go.GetComponentsInChildren<Collider>(true).Length == 0 &&
+                    !(Runner.IsWeapon(go) && Array.Exists(run.Refs.Slots, p => p != null && go.transform.parent == p))) continue;
                 List<GameObject> list;
                 if (!objects.TryGetValue(go.name, out list)) objects[go.name] = list = new List<GameObject>();
                 if (!list.Contains(go)) list.Add(go);
             }
+            // Native item recreation can finish after isPlay on slower machines. Retry
+            // without taking any objects or reporting them missing until the bounded wait
+            // ends. Keep inventory input gated and preserve the explicitly selected slot.
+            bool missing = false;
+            foreach (var raw in map.entries)
+            {
+                var entry = SaveSlot.Decode(raw);
+                if (entry == null || entry.slot < 1 || entry.slot > 6 || string.IsNullOrEmpty(entry.name)) continue;
+                if (!objects.ContainsKey(entry.name)) { missing = true; break; }
+            }
+            if (missing && Time.unscaledTime < _restoreUntil) { Loading = true; _loadAt = Time.unscaledTime + 0.25f; return; }
+            FinishLoad();
             var used = new HashSet<string>(StringComparer.Ordinal);
             foreach (var raw in map.entries)
             {
@@ -277,7 +287,7 @@ namespace Apocapocket
                 if (entry == null || entry.slot < 1 || entry.slot > 6 || string.IsNullOrEmpty(entry.name) || !used.Add(entry.name)) continue;
                 int index = entry.slot - 1;
                 List<GameObject> found;
-                if (!objects.TryGetValue(entry.name, out found) || found.Count == 0) { Plugin.Log.LogWarning("Load: missing pocket item " + entry.name); continue; }
+                if (!objects.TryGetValue(entry.name, out found) || found.Count == 0) { Plugin.Log.LogWarning("Load: missing pocket item " + entry.name + " (slot " + entry.slot + ", " + _file + ", after waiting for native items)"); continue; }
                 string why;
                 var item = PickCandidate(entry, found, run.Refs.Slots[index], out why);
                 if (item == null) { Plugin.Log.LogWarning("Load: " + entry.name + " (slot " + entry.slot + ") not restored: " + why); continue; }
@@ -295,7 +305,12 @@ namespace Apocapocket
             run.EjectLockedAfterLoad();
             if (Plugin.Enabled.Value && map.selected >= 0 && map.selected < run.Unlocked) run.QueueSelection(map.selected);
             Plugin.V("Load mapping: " + json);
-            _loadSeen = false;
+        }
+
+        private void FinishLoad()
+        {
+            Loading = false; _loadSeen = false; _loadAt = -1f; _restoreUntil = -1f;
+            _requestedLoadFile = null;
         }
 
         private IEnumerable<string> Candidates()

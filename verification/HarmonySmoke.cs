@@ -36,13 +36,14 @@ internal static class HarmonySmoke
             Console.WriteLine("Checked Unity lifecycle signatures: " + type.FullName);
         }
         var metadata = (BepInPlugin)plugin.GetType("Apocapocket.Plugin").GetCustomAttributes(typeof(BepInPlugin), false)[0];
-        if (metadata.GUID != "com.denis.apocalypter.apocapocket" || metadata.Version != new Version(2, 0, 0)) throw new Exception("Invalid plugin identity/version");
+        var declaredVersion = new Version((string)plugin.GetType("Apocapocket.Plugin").GetField("VERSION").GetRawConstantValue());
+        if (metadata.GUID != "com.denis.apocalypter.apocapocket" || metadata.Version != declaredVersion) throw new Exception("Invalid plugin identity/version");
         var harmony = new Harmony("apocapocket.verification");
         harmony.PatchAll(plugin);
         var methods = Harmony.GetAllPatchedMethods().Where(m => Harmony.GetPatchInfo(m).Owners.Contains(harmony.Id)).ToArray();
         if (methods.Length != 4) throw new Exception("Expected four patches; got " + methods.Length);
         foreach (var method in methods) Console.WriteLine("Patched " + method.DeclaringType.FullName + "." + method.Name);
         harmony.UnpatchSelf();
-        Console.WriteLine("PASS: Unity lifecycle signatures, 2.0.0 plugin metadata and all Harmony patches on the actual game assemblies.");
+        Console.WriteLine("PASS: Unity lifecycle signatures, " + metadata.Version + " plugin metadata and all Harmony patches on the actual game assemblies.");
     }
 }

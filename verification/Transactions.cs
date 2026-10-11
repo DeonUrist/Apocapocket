@@ -213,7 +213,7 @@ internal static class Transactions
         var settings = new ES3Settings(file) { location = ES3.Location.File };
         Check(ES3.KeyExists(Persistence.Key, settings), "Mapping exists in same game save after delayed verification");
         var map = JsonUtility.FromJson<SaveMap>(ES3.Load<string>(Persistence.Key, settings));
-        Check(map.selected == 4 && map.slots.Length == 3 && map.slots.Single(s => s.slot == 5).name == extra.name, "Mapping preserves logical borrowed identity and selection");
+        Check(map.selected == 4 && map.entries.Length == 3 && map.entries.Select(SaveSlot.Decode).Single(s => s.slot == 5).name == extra.name, "Mapping preserves logical borrowed identity and selection");
 
         r = Create(); fsm = SaveFsm(file);
         r.Save.OnState(r, fsm.Fsm, "LoadGame");
@@ -225,6 +225,7 @@ internal static class Transactions
 
         r = Create(); fsm = SaveFsm(file); fsm.FsmVariables.GetFsmFloat("Timeline").Value = 43f;
         r.Save.OnState(r, fsm.Fsm, "LoadGame"); can = Item("can(Clone)1"); extra = Item("extra(Clone)3", true);
+        can.transform.position = extra.transform.position = new Vector3(50, 0, 0);
         r.Save.OnState(r, fsm.Fsm, "isPlay"); Step(r, 35);
         Check(can.transform.parent == null && extra.transform.parent == null, "Stale unknown ES3 key from a vanilla re-save never repockets items");
 
@@ -237,7 +238,7 @@ internal static class Transactions
         Check(!ES3.KeyExists(Persistence.Key, settings), "Saving while disabled removes stale mapping from cache and file");
 
         r = Create(); fsm = SaveFsm(file);
-        ES3.Save(Persistence.Key, JsonUtility.ToJson(new SaveMap { slots = new[] { new SaveSlot { slot = 4, name = "stale" } } }), settings);
+        ES3.Save(Persistence.Key, JsonUtility.ToJson(new SaveMap { entries = new[] { new SaveSlot { slot = 4, name = "stale" }.Encode() } }), settings);
         var stale = Item("stale", true);
         r.Save.OnState(r, fsm.Fsm, "Start"); r.Save.OnState(r, fsm.Fsm, "setSeed"); r.Save.OnState(r, fsm.Fsm, "isPlay"); Step(r, 35);
         Check(stale.transform.parent == null && r.Slots[3].Content == null, "New game never imports previous character mapping");
@@ -256,6 +257,65 @@ internal static class Transactions
         r.Save.AfterState(r, registry.Fsm, "store cached file");
         Check(!r.Save.Normalised && radio.transform.parent == r.Refs.Slots[3], "Registry flush restores inventory synchronously");
         Check(ES3.KeyExists(Persistence.Key, new ES3Settings("SaveGame2.es3") { location = ES3.Location.File }), "Mapping entered cache before registry flush");
+    }
+
+    private static void DelayedLoadAndSlotIdentity()
+    {
+        const string selected = "SaveGame3.es3", previous = "SaveGame4.es3";
+        Action<string, string> mapping = (file, name) => ES3.Save(Persistence.Key,
+            JsonUtility.ToJson(new SaveMap { entries = new[] { new SaveSlot { slot = 4, name = name, hasWorld = true, world = Vector3.zero }.Encode() } }),
+            new ES3Settings(file) { location = ES3.Location.File });
+        mapping(selected, "late(Clone)1"); mapping(previous, "foreign(Clone)2");
+        var r = Create(); var fsm = SaveFsm(selected); ES3Settings.defaultSettings.path = previous;
+        var foreign = Item("foreign(Clone)2");
+        var click = Fsm(new GameObject("load_game_3"), "Continue", "off");
+        r.Save.OnState(r, click.Fsm, "clicked"); r.Save.OnState(r, fsm.Fsm, "LoadGame");
+        fsm.ActiveStateName = "isPlay"; r.Save.OnState(r, fsm.Fsm, "isPlay"); Step(r, 40);
+        Check(r.Save.Loading && r.Slots[3].Content == null && Plugin.Log.Warnings.Count == 0, "Late native item waits quietly; stale default slot is not imported");
+        var late = Item("late(Clone)1"); Step(r, 25); Drain(r);
+        Check(!r.Save.Loading && r.Slots[3].Content == late && foreign.transform.parent == null && Plugin.Log.Warnings.Count == 0, "Late native item restores from explicitly selected slot with no missing-item warning");
+
+        r = Create(); fsm = SaveFsm(selected); ES3Settings.defaultSettings.path = selected;
+        r.Save.OnState(r, fsm.Fsm, "LoadGame"); fsm.ActiveStateName = "isPlay";
+        r.Save.OnState(r, fsm.Fsm, "isPlay"); Step(r, 400);
+        Check(!r.Save.Loading && Plugin.Log.Warnings.Count(w => w.Contains("missing pocket item")) == 1, "Genuinely absent item releases input and reports one warning after bounded retry");
+
+        r = Create(); fsm = SaveFsm(selected); ES3Settings.defaultSettings.path = selected;
+        r.Save.OnState(r, fsm.Fsm, "LoadGame"); fsm.ActiveStateName = "isPlay";
+        r.Save.OnState(r, fsm.Fsm, "isPlay"); Step(r, 40);
+        r.Save.OnState(r, fsm.Fsm, "Start"); r.Save.OnState(r, fsm.Fsm, "setSeed");
+        late = Item("late(Clone)1"); r.Save.OnState(r, fsm.Fsm, "isPlay"); Step(r, 400);
+        Check(!r.Save.Loading && r.Slots[3].Content == null && late.transform.parent == null && Plugin.Log.Warnings.Count == 0, "New game cancels pending restoration and ignores previous character mapping");
+
+        r = Create(); fsm = SaveFsm("SaveGame5.es3"); ES3Settings.defaultSettings.path = previous;
+        click = Fsm(new GameObject("load_game_5"), "Continue", "off"); foreign = Item("foreign(Clone)2");
+        r.Save.OnState(r, click.Fsm, "clicked"); r.Save.OnState(r, fsm.Fsm, "LoadGame");
+        fsm.ActiveStateName = "isPlay"; r.Save.OnState(r, fsm.Fsm, "isPlay"); Step(r, 40);
+        Check(!r.Save.Loading && r.Slots[3].Content == null && foreign.transform.parent == null, "Selected slot without mapping never falls back to previous slot");
+
+        r = Create(); fsm = SaveFsm(selected); ES3Settings.defaultSettings.path = selected;
+        ES3.Save(Persistence.Key, JsonUtility.ToJson(new SaveMap { entries = new[] {
+            new SaveSlot { slot = 1, name = "holstered(Clone)3" }.Encode(),
+            new SaveSlot { slot = 4, name = "compound(Clone)4", hasWorld = true, world = Vector3.zero }.Encode()
+        } }), new ES3Settings(selected) { location = ES3.Location.File });
+        r.Save.OnState(r, fsm.Fsm, "LoadGame");
+        var holstered = new GameObject("holstered(Clone)3"); Fsm(holstered, "weaponType");
+        holstered.AddComponent<Renderer>(); holstered.transform.SetParent(r.Refs.Slots[0]);
+        var compound = new GameObject("compound(Clone)4"); compound.AddComponent<Renderer>();
+        Child(compound.transform, "physics").gameObject.AddComponent<Collider>();
+        new GameObject("compound(Clone)4").AddComponent<Renderer>(); // Stripped icon copy must remain excluded.
+        fsm.ActiveStateName = "isPlay"; r.Save.OnState(r, fsm.Fsm, "isPlay"); Step(r, 40);
+        Check(!r.Save.Loading && r.Slots[0].Content == holstered && r.Slots[3].Content == compound && Plugin.Log.Warnings.Count == 0,
+            "Native holstered weapon without root physics and item with child collider restore; stripped visual copy is excluded");
+
+        r = Create(); fsm = SaveFsm(selected); ES3Settings.defaultSettings.path = selected; mapping(selected, "save-during-load(Clone)5");
+        r.Save.OnState(r, fsm.Fsm, "LoadGame"); fsm.ActiveStateName = "isPlay";
+        r.Save.OnState(r, fsm.Fsm, "isPlay"); Step(r, 40);
+        late = Item("save-during-load(Clone)5"); fsm.ActiveStateName = "wait";
+        r.Save.OnState(r, fsm.Fsm, "wait");
+        var saved = JsonUtility.FromJson<SaveMap>(ES3.Load<string>(Persistence.Key, new ES3Settings(selected) { location = ES3.Location.Cache }));
+        Check(!r.Save.Loading && r.Save.Normalised && saved.entries.Select(SaveSlot.Decode).Any(e => e.name == late.name),
+            "Manual save during retry resolves available loaded inventory before replacing its mapping");
     }
 
     private static void Pickup(Runner r, GameObject item)
@@ -303,7 +363,7 @@ internal static class Transactions
         System.IO.Directory.CreateDirectory(ES3Settings.TestDirectory);
         try
         {
-            ItemsAndPause(); BorrowAndQueue(); DropThrowAndAid(); RollbackAndCustody(); PickupPolicy(); PickupsAndBackpacks(); SaveAndLoad(); SaveRegistryOrdering();
+            ItemsAndPause(); BorrowAndQueue(); DropThrowAndAid(); RollbackAndCustody(); PickupPolicy(); PickupsAndBackpacks(); SaveAndLoad(); SaveRegistryOrdering(); DelayedLoadAndSlotIdentity();
             Console.WriteLine("PASS: " + checks + " checks executing production inventory, transaction and persistence code with headless adapters.");
         }
         finally { System.IO.Directory.Delete(ES3Settings.TestDirectory, true); }

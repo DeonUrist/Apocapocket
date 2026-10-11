@@ -9,6 +9,7 @@
     <Compile Include="../Inventory.cs" Link="Inventory.cs" />
     <Compile Include="../InventoryWorld.cs" Link="InventoryWorld.cs" />
     <Compile Include="../Persistence.cs" Link="Persistence.cs" />
+    <Compile Include="../Watchdog.cs" Link="Watchdog.cs" />
     <Compile Include="Runtime.cs" />
     <Compile Include="Transactions.cs" />
   </ItemGroup>

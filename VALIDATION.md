@@ -1,4 +1,20 @@
-# 2.0.0 implementation validation
+# Implementation validation
+
+## 2.0.8 warning and load fixes
+
+12 October 2026: 84 checks pass against the production inventory, persistence and watchdog code using headless adapters.
+New cases cover delayed item creation, a stale default ES3 path versus an explicit load button, a selected save without a
+mapping, cancellation by a new game, bounded genuinely missing-item diagnostics, child colliders, native holstered weapons
+without root physics and exclusion of stripped visual copies. All four Harmony patches and lifecycle/metadata checks pass
+against the game assemblies using Unity's Mono runtime. The plugin also passes the isolated Apocasaver native save,
+rollback and cleanup integration suite with Apocapatrol.
+
+The original transaction harness had drifted from production (old SaveMap.slots and missing watchdog/runtime APIs); it now
+uses string entries and the current production sources. Player saves and installed game plugins were not changed.
+
+This validates the code paths with fixtures; the reporting player's save and runtime hierarchy were not supplied.
+
+## Earlier implementation coverage
 
 The implementation is built and checked locally. It has not been certified by running all thirteen acceptance scenarios in Apocalypter. No existing player save was modified by verification.
 

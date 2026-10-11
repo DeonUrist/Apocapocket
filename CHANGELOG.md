@@ -1,3 +1,10 @@
+# Apocapocket 2.0.8
+
+- Keep explicit load-slot identity authoritative and prevent new games from reading the previous character's mapping.
+- Retry late native item creation for up to five seconds before reporting a missing item. A manual save during this wait resolves available inventory before replacing its mapping.
+- Recognize child colliders and holstered native weapons without root physics; keep exact-name/position checks and icon-copy exclusions.
+- Update the transaction harness, Mono build and Harmony smoke checks to cover current production code.
+
 # Apocapocket 2.0.7
 
 - Weapon watchdog: fixes the "weapon hints on screen, nothing in the hands, can't change weapon" lock-up within about 3-5 seconds. The game's weapon logic can get stuck after a grenade, bandage, food or a held item (it waits for a weapon to come back but has none recorded), or keep weapons away because of a held item that is gone or invisible. The watchdog checks once a second (negligible cost), repairs the hand or puts the weapon back / holsters it, and writes a "Weapon watchdog:" line to the log. It never acts in vehicles, menus, during saves/loads or while a slot change is in progress.

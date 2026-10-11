@@ -19,12 +19,13 @@ namespace UnityEngine
         public Transform transform { get { return gameObject.transform; } }
         public T GetComponent<T>() where T : Component { return gameObject.GetComponent<T>(); }
         public T[] GetComponents<T>() where T : Component { return gameObject.GetComponents<T>(); }
-        public T[] GetComponentsInChildren<T>(bool all) where T : Component { return gameObject.GetComponentsInChildren<T>(all); }
+        public T[] GetComponentsInChildren<T>(bool all = false) where T : Component { return gameObject.GetComponentsInChildren<T>(all); }
     }
     public class Behaviour : Component { public bool enabled = true; public bool isActiveAndEnabled { get { return enabled && gameObject.activeInHierarchy; } } }
     public class MonoBehaviour : Behaviour { }
     public class DefaultExecutionOrder : Attribute { public DefaultExecutionOrder(int order) { } }
-    public struct Scene { public bool IsValid() { return true; } }
+    public struct Scene { public bool isLoaded { get { return true; } } public bool IsValid() { return true; } }
+    [Flags] public enum HideFlags { None = 0, HideInHierarchy = 1, DontSave = 52 }
     public class GameObject : Object
     {
         public string name;
@@ -32,6 +33,7 @@ namespace UnityEngine
         public bool activeSelf = true;
         public bool activeInHierarchy { get { return activeSelf && (transform.parent == null || transform.parent.gameObject.activeInHierarchy); } }
         public Scene scene;
+        public HideFlags hideFlags;
         public Transform transform;
         private readonly List<Component> components = new List<Component>();
         public GameObject(string name)
@@ -51,7 +53,7 @@ namespace UnityEngine
         public T GetComponent<T>() where T : Component { return components.OfType<T>().FirstOrDefault(); }
         public T GetComponentInChildren<T>(bool all) where T : Component { return GetComponentsInChildren<T>(all).FirstOrDefault(); }
         public T[] GetComponents<T>() where T : Component { return components.OfType<T>().ToArray(); }
-        public T[] GetComponentsInChildren<T>(bool all) where T : Component
+        public T[] GetComponentsInChildren<T>(bool all = false) where T : Component
         {
             var found = new List<T>(GetComponents<T>());
             foreach (Transform child in transform) found.AddRange(child.gameObject.GetComponentsInChildren<T>(all));
@@ -92,8 +94,10 @@ namespace UnityEngine
         public Vector3 normalized { get { float size = (float)Math.Sqrt(x * x + y * y + z * z); return size == 0 ? zero : this * (1 / size); } }
         public static Vector3 operator +(Vector3 a, Vector3 b) { return new Vector3(a.x + b.x, a.y + b.y, a.z + b.z); }
         public static Vector3 operator *(Vector3 a, float b) { return new Vector3(a.x * b, a.y * b, a.z * b); }
+        public static Vector3 operator -(Vector3 a, Vector3 b) { return new Vector3(a.x - b.x, a.y - b.y, a.z - b.z); }
+        public static float Distance(Vector3 a, Vector3 b) { var d = a - b; return (float)Math.Sqrt(d.x * d.x + d.y * d.y + d.z * d.z); }
     }
-    public struct Quaternion { public float x, y, z, w; public static Quaternion identity { get { return new Quaternion { w = 1 }; } } }
+    public struct Quaternion { public float x, y, z, w; public Quaternion(float x, float y, float z, float w) { this.x = x; this.y = y; this.z = z; this.w = w; } public static Quaternion identity { get { return new Quaternion { w = 1 }; } } }
     public class Rigidbody : Component { public bool isKinematic, useGravity; public float mass; public Vector3 velocity, angularVelocity; }
     public class Renderer : Behaviour { }
     public class Collider : Behaviour { public bool isTrigger; }
@@ -163,6 +167,7 @@ namespace Apocapocket
     {
         public readonly List<string> Warnings = new List<string>();
         public void LogWarning(object value) { Warnings.Add(value.ToString()); }
+        public void LogInfo(object value) { }
     }
     internal static class Plugin
     {

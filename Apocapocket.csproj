@@ -31,7 +31,7 @@
     <Reference Include="UnityEngine.TextRenderingModule"><HintPath>$(ManagedDir)\UnityEngine.TextRenderingModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="PlayMaker"><HintPath>$(ManagedDir)\PlayMaker.dll</HintPath><Private>false</Private></Reference>
   </ItemGroup>
-  <Target Name="DeployToGame" AfterTargets="Build">
+  <Target Name="DeployToGame" AfterTargets="Build" Condition="'$(SkipDeploy)' != 'true'">
     <Copy SourceFiles="$(OutDir)$(AssemblyName).dll" DestinationFolder="$(GameDir)\BepInEx\plugins" />
     <Message Importance="high" Text="Deployed $(AssemblyName).dll to $(GameDir)\BepInEx\plugins" />
   </Target>

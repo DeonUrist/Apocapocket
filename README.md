@@ -1,4 +1,4 @@
-# Apocapocket 2.0.0
+# Apocapocket 2.0.8
 
 Six item and weapon slots for Apocalypter (Unity 2020.3, BepInEx 5, PlayMaker).
 
@@ -20,7 +20,12 @@ Merchant stock, PartAdjusterTools, crates and objects containing other saveable 
 
 Inventory mappings and hand poses are stored under **Apocapocket.Slots** inside the game's `.es3` save. During serialization, ordinary items and extra-slot weapons are visible, physical world items at the player's drop point. Native-slot weapons retain their vanilla representation. Inventory is restored after serialization. Loading the same save with the plugin disabled leaves the extra items in the world.
 
-The mapping is written to the ES3 cache immediately before `NewGO_ArrayList` executes its `StoreCachedFile` actions, then written and verified in both cache and file after the save. A saved vanilla Timeline value detects stale mapping keys retained by vanilla re-saves. Legacy 1.x holder reference IDs remain registered in this migration release only; new item saves do not use those parents.
+The mapping is written to the ES3 cache immediately before `NewGO_ArrayList` executes its `StoreCachedFile` actions, then written and verified in both cache and file after the save. Saved world positions guard against stale mapping keys retained by vanilla re-saves. Legacy 1.x holder reference IDs remain registered in this migration release only; new item saves do not use those parents.
+
+2.0.8 keeps an explicit load-slot choice authoritative and prevents new games from importing the previous character's mapping.
+If native items are still being recreated, restoration retries for up to five seconds before reporting genuinely missing items.
+Inventory input waits until restoration finishes. Item lookup includes child colliders and holstered native weapons without root
+physics, while excluding stripped icon copies. Existing mappings and the plugin GUID are unchanged.
 
 Weapons and items with native `imageUI` textures use those textures. Other icons are queued one per gameplay frame and cached in `BepInEx/cache/Apocapocket/icons`. Deleting this cache only regenerates icons. There are no external inventory save files.
 
