@@ -1,4 +1,5 @@
 using System;
+using HutongGames.PlayMaker;
 using UnityEngine;
 
 namespace Apocapocket
@@ -12,15 +13,33 @@ namespace Apocapocket
     //  - a `Slot N` state whose WeaponInHand never moved the weapons into HandItemUse shows the hints without arms.
     // Once a second (a few string compares) the state is sampled; a condition that lasts 3 s is repaired. A repair that does not
     // stick is tried once more holstered, then left alone until the state changes. Never in a vehicle, during an inventory
-    // operation, a save / load, a pause or a menu. Plain `useAid` (grenade spam, eating, ladders...) is the game's own business.
+    // operation, a save / load, a pause or a menu. 2.0.9 also observes native item animations before any repair. New stale-aid
+    // recovery requires completed/idle animations plus a recent weapon request or observed smoking completion; it never
+    // changes smoking progress, effects, item quantities, pause flags or save data.
     internal sealed partial class Runner
     {
         private const float WatchEvery = 1f, StuckFor = 3f;
         private float _watchAt, _stuckSince = -1f;
         private string _stuckWhy, _repairedWhy;
         private int _repairs;
+        private bool _smoking;
+        private float _afterSmokeUntil = -1f, _requestUntil = -1f;
+        private int _requestedWeapon = -1;
+        private bool _aidsIdle;
+        private FsmBool _itemAnimation;
 
-        internal void ResetWatchdog() { _stuckSince = -1f; _stuckWhy = null; _repairedWhy = null; _repairs = 0; }
+        internal void ResetWatchdog()
+        {
+            _watchAt = 0f; _stuckSince = -1f; _stuckWhy = null; _repairedWhy = null; _repairs = 0;
+            _smoking = false; _afterSmokeUntil = _requestUntil = -1f; _requestedWeapon = -1;
+            _aidsIdle = false; _itemAnimation = null;
+        }
+
+        private void NoteWeaponRequest(int target)
+        {
+            _requestedWeapon = target >= 0 && target < Unlocked && Slots[target].Kind == Kind.Weapon && Slots[target].Content != null ? target : -1;
+            _requestUntil = _requestedWeapon >= 0 ? Time.unscaledTime + 60f : -1f;
+        }
 
         private void Watchdog()
         {
@@ -29,10 +48,25 @@ namespace Apocapocket
             _watchAt = now + WatchEvery;
             if (CurrentOp != null || _queued != null || Save.Busy || !GameplayActive() || !Refs.Weapons.enabled
                 || Refs.InCar != null && State(Refs.InCar) != "" && State(Refs.InCar) != "OnFoot") { _stuckSince = -1f; return; }   // on foot only
+            bool smoking;
+            bool activeAid = InspectAids(out smoking);
+            if (_smoking && !smoking && _aidsIdle) _afterSmokeUntil = now + 60f;
+            _smoking = smoking;
+            // Long smoking sessions are healthy. Never reveal a held item, reset an animation flag,
+            // or re-enter a weapon state during smoking, eating, drinking, binoculars or a grenade.
+            if (activeAid) { ResetStuckSample(); return; }
             string why = StuckReason();
             if (why == null) { _stuckSince = -1f; _stuckWhy = null; _repairedWhy = null; _repairs = 0; return; }   // healthy
             if (_stuckSince < 0f || why != _stuckWhy) { _stuckSince = now; _stuckWhy = why; return; }
-            if (now - _stuckSince < StuckFor) return;
+            float wait = StuckFor;
+            if (why.StartsWith("after item use:", StringComparison.Ordinal))
+            {
+                var nativeWait = Refs.Weapons.FsmVariables.GetFsmFloat("WaitReEquip");
+                // Honour the game's own delay, plus a margin; reject invalid/modded extreme values.
+                if (nativeWait != null && (float.IsNaN(nativeWait.Value) || float.IsInfinity(nativeWait.Value) || nativeWait.Value > 30f)) return;
+                wait = Math.Max(5f, (nativeWait != null ? Math.Max(0f, nativeWait.Value) : 2.1f) + StuckFor);
+            }
+            if (now - _stuckSince < wait) return;
             _stuckSince = -1f;
             if (why == _repairedWhy && _repairs >= 2) return;   // two repairs did not help: leave it until the state changes
             if (why != _repairedWhy) _repairs = 0;
@@ -45,6 +79,12 @@ namespace Apocapocket
         private string StuckReason()
         {
             string s = State(Refs.Weapons);
+            bool context = Time.unscaledTime < _afterSmokeUntil || Time.unscaledTime < _requestUntil;
+            if (_aidsIdle && context && !InHandState() && HandUseClear())
+            {
+                if (_itemAnimation != null && _itemAnimation.Value) return "after item use: stale animBool";
+                if (s == "useAid") return "after item use: useAid without an active aid";
+            }
             if (s == "reEquip" || s == "checkHandItem") return s;                 // both resolve within a frame when they can
             if (InHandState())
             {
@@ -60,6 +100,11 @@ namespace Apocapocket
 
         private void Repair(string why, bool holster)
         {
+            if (why.StartsWith("after item use:", StringComparison.Ordinal))
+            {
+                RepairAfterAid(why, holster);
+                return;
+            }
             if (InHandState())
             {
                 // the hand first; the weapons come back by themselves once nothing is held (useAid -> reEquip)
@@ -97,11 +142,78 @@ namespace Apocapocket
                 if (target < 0 || target > 2) target = -1;
                 // a pocketed item is never "drawn" - except the host of a borrowed slot 4-6 weapon (its SlotState is the parked one)
                 if (target >= 0 && !(Borrow != null && target == Borrow.Host) && Slots[target].Kind == Kind.Item) target = -1;
+                if (target >= 0 && !IsWeapon(SlotChild(Refs.Slots[target]))) target = -1;
             }
             SetWeaponBools(target);
             Refs.Weapons.Fsm.SetState(target >= 0 ? "Slot " + (target + 1) : "off 2");
             if (target < 0 && Borrow == null) Selected = -1;
             Plugin.Log.LogWarning("Weapon watchdog: weapons stuck in '" + why + "' for " + StuckFor + "+ s -> " + (target >= 0 ? "slot " + (target + 1) : "holstered"));
+        }
+
+        private void ResetStuckSample()
+        { _stuckSince = -1f; _stuckWhy = null; _repairedWhy = null; _repairs = 0; }
+
+        // Read-only observation. The smoke End state can remain entered because it contains an
+        // every-frame action. Treat it as completed only after its native cleanup hid both arms
+        // and reset scale. Never send End/Deactivate or rewrite the smoking FSM/scale/effect.
+        private bool InspectAids(out bool smoking)
+        {
+            smoking = false; _aidsIdle = false; _itemAnimation = null;
+            var root = Refs.Grab.transform.Find("ItemAnim");
+            if (root == null) return false; // Existing repairs still work; new recovery needs positive evidence.
+            var flag = Fsms.Find(root.gameObject, "animBool");
+            if (flag != null) _itemAnimation = flag.FsmVariables.GetFsmBool("animBool");
+            bool busy = false, known = flag != null && flag.Fsm != null && flag.Fsm.Initialized;
+            int smokers = 0;
+            foreach (var f in root.GetComponentsInChildren<PlayMakerFSM>(true))
+            {
+                if (f == null || f.FsmName != "Animation") continue;
+                bool smoke = f.gameObject.name == "Weed Anim" || f.gameObject.name == "Cigar Anim" || f.gameObject.name == "Cigarette Anim";
+                if (smoke) smokers++;
+                else if (!f.gameObject.activeInHierarchy || !f.enabled) continue;
+                string state = State(f);
+                bool idle = state == "off";
+                if (smoke && state == "End")
+                {
+                    var left = f.transform.Find("arm_left"); var right = f.transform.Find("arm_right");
+                    var scale = f.FsmVariables.GetFsmFloat("scale");
+                    idle = left != null && right != null && !left.gameObject.activeSelf && !right.gameObject.activeSelf
+                        && scale != null && Math.Abs(scale.Value - 1f) < 0.001f;
+                }
+                if (!idle) { busy = true; if (smoke) smoking = true; }
+                if (!f.enabled || f.Fsm == null || !f.Fsm.Initialized) known = false;
+            }
+            var grenade = Refs.Grab.transform.Find("QuickItems/grenade");
+            var attack = grenade != null ? Fsms.Find(grenade.gameObject, "Attack") : null;
+            if (attack != null && attack.isActiveAndEnabled && State(attack) != "on") busy = true;
+            _aidsIdle = known && smokers == 3 && !busy;
+            return busy;
+        }
+
+        private bool HandUseClear()
+        {
+            for (int i = 0; i < Refs.HandItemUse.childCount; i++)
+                if (Refs.HandItemUse.GetChild(i) != Refs.Weapons.transform) return false;
+            return true;
+        }
+
+        private void RepairAfterAid(string why, bool holster)
+        {
+            bool smoking;
+            if (InspectAids(out smoking) || !_aidsIdle || InHandState() || !HandUseClear()) return;
+            string before = "weapons=" + State(Refs.Weapons) + ", grab=" + State(Refs.Grab)
+                + ", weaponInHand=" + State(Fsms.Find(Refs.Weapons.gameObject, "WeaponInHand"))
+                + ", animBool=" + (_itemAnimation != null && _itemAnimation.Value) + ", selected=" + (Selected + 1);
+            int logical = Time.unscaledTime < _requestUntil ? _requestedWeapon : Selected;
+            if (Borrow != null && logical < 0) logical = Borrow.Logical;
+            if (holster || logical < 0 || logical >= Unlocked || Slots[logical].Content == null || Slots[logical].Kind != Kind.Weapon) logical = -1;
+            // No inventory is discarded. Restore a borrowed host before the normal selection transaction.
+            if (_itemAnimation != null) _itemAnimation.Value = false;
+            EndBorrowNow();
+            SetWeaponBools(-1); Refs.Weapons.Fsm.SetState("off 2"); Selected = -1;
+            if (logical >= 0) _queued = new Op { Kind = OpKind.Select, Target = logical };
+            _afterSmokeUntil = _requestUntil = -1f;
+            Plugin.Log.LogWarning("Weapon watchdog: " + why + " -> native holster" + (logical >= 0 ? ", retry slot " + (logical + 1) : "") + " (" + before + ")");
         }
 
         private bool InHandState()

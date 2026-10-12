@@ -1,5 +1,25 @@
 # Implementation validation
 
+## 2.0.9 smoking and weapon recovery
+
+12 October 2026: 115 checks pass against production code. New fixtures simulate long weed burning, lighting, inhaling,
+unfinished cleanup, completed native End with both arms hidden and scale reset, stale animBool refusing a weapon draw,
+stalled useAid with and without a stale flag, and recovery while an extra-slot weapon has a parked native host.
+Negative cases protect active cigars/cigarettes, bandaging, drinking, binoculars, grenades, real held items, another mod's
+hand object, menu/time/grab pauses, vehicles, loading, disabled/uninitialized smoking logic and an invalid re-equip delay.
+Assertions confirm smoking state, scale, weed effects and weapon ownership remain unchanged by the guarded recovery.
+The fixture now represents the native Weapons holder entering/leaving HandItemUse rather than a synthetic arms child.
+
+The plugin compiles with Unity Mono against the game's assemblies; metadata/lifecycle checks and all four Harmony patches
+pass. No installed DLL or player save was changed. The report comes from another player and is not locally reproducible.
+The fixtures prove the covered recovery paths and guards, not all third-party mod behavior or the unknown original trigger.
+
+Affected-player acceptance: restart with 2.0.9; smoke weed through lighting, idle burn, held Smoke input and natural completion;
+attempt the previously failing weapon draw after completion, including an extra-slot weapon; check for one
+`Weapon watchdog: after item use:` diagnostic when a repair is necessary. Healthy smoking needs no diagnostic or reset.
+Also check cigar/cigarette use, normal bandage/grenade re-equip and vehicle/save transitions. Capture LogOutput.log if the
+lock persists. GrabItem_Pause owned by another system is deliberately not cleared by this fix.
+
 ## 2.0.8 warning and load fixes
 
 12 October 2026: 84 checks pass against the production inventory, persistence and watchdog code using headless adapters.

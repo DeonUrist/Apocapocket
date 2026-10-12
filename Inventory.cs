@@ -203,6 +203,7 @@ namespace Apocapocket
         {
             if (!Ready || !GameplayActive() || Save.Busy || Time.frameCount == Plugin.HandledFrame) return;
             Plugin.HandledFrame = Time.frameCount;
+            NoteWeaponRequest(target);
             Submit(new Op { Kind = OpKind.Select, Target = target });
         }
 

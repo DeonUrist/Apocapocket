@@ -31,6 +31,7 @@ internal static class Transactions
         refs.Grab.FsmVariables.Objects["Hand"] = new FsmGameObject { Value = refs.Hand.gameObject };
         refs.HandItemUse = Child(camera.transform, "HandItemUse");
         refs.Weapons = Fsm(new GameObject("Weapons"), "Weapons", "off 2");
+        refs.Weapons.transform.SetParent(camera.transform);
         refs.Weapons.FsmVariables.Bools["weaponOff_Bool"] = new FsmBool { Value = true };
         for (int i = 0; i < 6; i++)
         {
@@ -54,12 +55,14 @@ internal static class Transactions
         refs.Grab.OnState = state => { if (state == "Grab") refs.Grab.ActiveStateName = Time.timeScale > 0 ? "ItemInHand" : "notHold"; };
         refs.Weapons.OnState = state =>
         {
-            if (state.StartsWith("Slot ") && refs.HandItemUse.childCount == 0) Child(refs.HandItemUse, "DrawnArms");
+            if (state.StartsWith("Slot ")) refs.Weapons.transform.SetParent(refs.HandItemUse);
+            if (state == "off 2") refs.Weapons.transform.SetParent(camera.transform);
         };
         refs.Weapons.OnEvent = ev =>
         {
             if (ev != "back") return;
             refs.Weapons.ActiveStateName = "off 2";
+            refs.Weapons.transform.SetParent(camera.transform);
             while (refs.HandItemUse.childCount > 0) refs.HandItemUse.GetChild(0).SetParent(null);
         };
         return r;
@@ -180,6 +183,125 @@ internal static class Transactions
         Check(InventoryPolicy.FirstFree(kinds, 3, -1) == -1, "Locked extras excluded");
         kinds[0] = Kind.Empty; Check(InventoryPolicy.FirstFree(kinds, 6, 0) == 3, "Borrow host excluded");
         var r = Create(); Press(r, 4); Check(r.Selected == 4 && r.Borrow == null, "Empty extra selectable without borrowing");
+    }
+
+    private static PlayMakerFSM AddAids(Runner r, out FsmBool flag)
+    {
+        var root = Child(r.Refs.Grab.transform, "ItemAnim");
+        var boolFsm = Fsm(root.gameObject, "animBool", "animBool");
+        flag = new FsmBool(); boolFsm.FsmVariables.Bools["animBool"] = flag;
+        PlayMakerFSM weed = null;
+        foreach (string name in new[] { "Weed Anim", "Cigar Anim", "Cigarette Anim" })
+        {
+            var node = Child(root, name); var f = Fsm(node.gameObject, "Animation", "off");
+            f.FsmVariables.Floats["scale"] = new FsmFloat { Value = 1f };
+            Child(node, "arm_left").gameObject.SetActive(false); Child(node, "arm_right").gameObject.SetActive(false);
+            if (name == "Weed Anim") weed = f;
+        }
+        return weed;
+    }
+
+    private static void SmokingRecovery()
+    {
+        // Execute the production watchdog, including its time sampling and normal selection retry.
+        var r = Create(); FsmBool flag; var weed = AddAids(r, out flag);
+        var gun = Item("smoke-test-gun", true); Put(r, 0, gun); Press(r, 0);
+        var effect = Fsm(new GameObject("Weed_Effect"), "WeedEffect", "on");
+        weed.FsmVariables.Floats["scale"].Value = 0.4f;
+        foreach (string state in new[] { "anim", "on", "smoke", "End" })
+        {
+            weed.ActiveStateName = state; weed.transform.Find("arm_left").gameObject.SetActive(true);
+            flag.Value = true; r.Refs.Weapons.ActiveStateName = "reEquip";
+            Step(r, 660);
+            Check(Plugin.Log.Warnings.Count == 0 && flag.Value && weed.ActiveStateName == state
+                && weed.FsmVariables.Floats["scale"].Value == 0.4f && effect.ActiveStateName == "on",
+                "Watchdog must not interrupt weed in " + state + " or alter burn progress/effects");
+        }
+        weed.ActiveStateName = "on"; Step(r, 10800);
+        Check(weed.ActiveStateName == "on" && flag.Value && Plugin.Log.Warnings.Count == 0, "Idle burning for three minutes is legitimate smoking");
+        // The native End state may persist: cleanup is complete only once both arms are off and scale is reset.
+        weed.ActiveStateName = "End"; weed.transform.Find("arm_left").gameObject.SetActive(false);
+        weed.FsmVariables.Floats["scale"].Value = 1f;
+        r.Refs.Weapons.ActiveStateName = "useAid";
+        Step(r, 600); Drain(r);
+        Check(!flag.Value && r.Selected == 0 && r.Refs.Weapons.ActiveStateName == "Slot 1"
+            && r.Slots[0].Content == gun && gun.transform.parent == r.Refs.Slots[0], "Completed weed cleanup permits stale flag recovery and normal weapon redraw");
+        Check(weed.ActiveStateName == "End" && weed.FsmVariables.Floats["scale"].Value == 1f && effect.ActiveStateName == "on",
+            "Recovery never replays smoking End or resets the weed effect");
+        Check(Plugin.Log.Warnings.Count(s => s.Contains("after item use:")) == 1, "Recovery records one state diagnostic");
+
+        r = Create(); weed = AddAids(r, out flag); Put(r, 0, Item("stale-useAid", true)); Press(r, 0);
+        r.Refs.Weapons.ActiveStateName = "useAid"; Step(r, 600); Drain(r);
+        Check(!flag.Value && r.Refs.Weapons.ActiveStateName == "Slot 1" && r.Selected == 0,
+            "Stale useAid with an already-clear animation flag also recovers");
+
+        // A refused draw in off 2 was missed by the old watchdog. Simulate native animBool gating.
+        r = Create(); weed = AddAids(r, out flag); Put(r, 0, Item("refused-draw", true)); flag.Value = true;
+        var observedFlag = flag; var rr = r;
+        r.Refs.Weapons.OnState = state => {
+            if (!state.StartsWith("Slot ")) return;
+            if (observedFlag.Value) rr.Refs.Weapons.ActiveStateName = "off 2";
+            else rr.Refs.Weapons.transform.SetParent(rr.Refs.HandItemUse);
+        };
+        Press(r, 0); Check(r.Refs.Weapons.ActiveStateName == "off 2" && r.Selected == 0, "Fixture simulates refused native draw");
+        Step(r, 600); Drain(r);
+        Check(!flag.Value && r.Refs.Weapons.ActiveStateName == "Slot 1" && r.Selected == 0, "Refused draw is retried after idle proof and delay");
+
+        // The extra slot is restored through the existing transaction, preserving its parked host.
+        r = Create(); weed = AddAids(r, out flag);
+        var host = Item("parked-host", true); var extra = Item("borrowed-weed-gun", true);
+        Put(r, 0, host); Put(r, 1, Item("host2", true)); Put(r, 2, Item("host3", true)); Put(r, 4, extra);
+        Press(r, 4); flag.Value = true; r.Refs.Weapons.ActiveStateName = "useAid";
+        Step(r, 600); Drain(r);
+        Check(!flag.Value && r.Selected == 4 && r.Borrow != null && r.Borrow.Logical == 4 && r.Slots[0].Content == host
+            && r.Slots[4].Content == extra && host.transform.parent == ExtraSlots.Staging && extra.transform.parent == r.Refs.Slots[0],
+            "Recovery preserves borrowed weapon and parked native host");
+
+        // No recent smoke/weapon request: leave unrelated useAid and animation flags alone.
+        r = Create(); weed = AddAids(r, out flag); flag.Value = true; r.Refs.Weapons.ActiveStateName = "useAid";
+        Step(r, 660);
+        Check(flag.Value && Plugin.Log.Warnings.Count == 0 && r.Refs.Weapons.ActiveStateName == "useAid", "Unrelated aid state without recovery context is untouched");
+
+        foreach (string name in new[] { "Cigar Anim", "Cigarette Anim", "Bandage Anim", "Water Can Plastic Anim", "Binocular Anim" })
+        {
+            r = Create(); weed = AddAids(r, out flag); Put(r, 0, Item("guard-gun", true)); Press(r, 0); flag.Value = true;
+            var root = r.Refs.Grab.transform.Find("ItemAnim");
+            var node = root.Find(name) ?? Child(root, name);
+            var aid = Fsms.Find(node.gameObject, "Animation") ?? Fsm(node.gameObject, "Animation", "on");
+            aid.ActiveStateName = "on"; r.Refs.Weapons.ActiveStateName = "reEquip"; Step(r, 660);
+            Check(flag.Value && aid.ActiveStateName == "on" && Plugin.Log.Warnings.Count == 0, "Active " + name + " blocks all watchdog repairs");
+        }
+        r = Create(); weed = AddAids(r, out flag); Put(r, 0, Item("grenade-guard", true)); Press(r, 0); flag.Value = true;
+        Fsm(Child(Child(r.Refs.Grab.transform, "QuickItems"), "grenade").gameObject, "Attack", "fire");
+        r.Refs.Weapons.ActiveStateName = "reEquip"; Step(r, 660);
+        Check(flag.Value && Plugin.Log.Warnings.Count == 0, "Active grenade blocks all watchdog repairs");
+
+        foreach (string gate in new[] { "pause", "grab pause", "menu", "vehicle", "load", "held", "foreign hand", "uninitialized smoke", "disabled smoke", "modded wait" })
+        {
+            r = Create(); weed = AddAids(r, out flag); Put(r, 0, Item("gated-gun", true)); Press(r, 0);
+            flag.Value = true; r.Refs.Weapons.ActiveStateName = "useAid";
+            if (gate == "pause") Time.timeScale = 0;
+            if (gate == "grab pause")
+            {
+                r.Refs.GrabPause = Fsm(new GameObject("__GameManager__"), "GrabItem_Pause", "pause");
+                r.Refs.GrabPause.FsmVariables.Bools["GrabItem_Pause"] = new FsmBool { Value = true };
+            }
+            if (gate == "menu") r.Refs.Menu = Fsm(new GameObject("__GameManager__"), "Menu", "menu");
+            if (gate == "vehicle") r.Refs.InCar = Fsm(new GameObject("Player"), "InCar", "InCar");
+            if (gate == "load") r.Save.OnState(r, SaveFsm("gate.es3").Fsm, "LoadGame");
+            if (gate == "held") Hold(r, Item("real-held-item"));
+            if (gate == "foreign hand") Child(r.Refs.HandItemUse, "AnotherModItem");
+            if (gate == "uninitialized smoke") weed.Fsm.Initialized = false;
+            if (gate == "disabled smoke") weed.enabled = false;
+            if (gate == "modded wait") r.Refs.Weapons.FsmVariables.Floats["WaitReEquip"] = new FsmFloat { Value = float.NaN };
+            Step(r, 660);
+            Check(flag.Value && !Plugin.Log.Warnings.Any(s => s.Contains("after item use:")), "Recovery respects " + gate);
+            if (gate == "grab pause") Check(r.Refs.GrabPause.FsmVariables.GetFsmBool("GrabItem_Pause").Value, "Recovery never clears another system's pause flag");
+        }
+        // A legitimate native re-equip before the grace expires needs no intervention.
+        r = Create(); weed = AddAids(r, out flag); Put(r, 0, Item("normal-aid", true)); Press(r, 0);
+        r.Refs.Weapons.ActiveStateName = "useAid"; Step(r, 120); r.Refs.Weapons.Fsm.SetState("Slot 1"); Step(r, 600);
+        Check(Plugin.Log.Warnings.Count == 0, "Normal native aid re-equip is left alone");
     }
 
     private static PlayMakerFSM SaveFsm(string file)
@@ -363,7 +485,7 @@ internal static class Transactions
         System.IO.Directory.CreateDirectory(ES3Settings.TestDirectory);
         try
         {
-            ItemsAndPause(); BorrowAndQueue(); DropThrowAndAid(); RollbackAndCustody(); PickupPolicy(); PickupsAndBackpacks(); SaveAndLoad(); SaveRegistryOrdering(); DelayedLoadAndSlotIdentity();
+            ItemsAndPause(); BorrowAndQueue(); DropThrowAndAid(); RollbackAndCustody(); PickupPolicy(); PickupsAndBackpacks(); SaveAndLoad(); SaveRegistryOrdering(); DelayedLoadAndSlotIdentity(); SmokingRecovery();
             Console.WriteLine("PASS: " + checks + " checks executing production inventory, transaction and persistence code with headless adapters.");
         }
         finally { System.IO.Directory.Delete(ES3Settings.TestDirectory, true); }

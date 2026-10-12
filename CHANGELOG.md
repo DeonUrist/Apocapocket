@@ -1,3 +1,11 @@
+# Apocapocket 2.0.9
+
+- Guard every weapon-watchdog repair while native smoking, eating, drinking, binocular or grenade animations are active. Long weed/cigar/cigarette burn sessions remain untouched.
+- Recover a stale item-animation flag or stalled `useAid` only after positively checking idle item animations, a recent weapon request or observed smoking completion, an empty/weapon-only hand holder, and the native re-equip delay plus a grace period.
+- Recognize completed smoking `End` without replaying it: both smoking arms must already be hidden and scale reset by native cleanup. No changes to smoking FSMs, burn progress, weed effects, quantities, pause flags or save format.
+- Recover through native holster and the existing selection transaction, preserving extra-slot weapons and parked hosts. Log the observed weapon/grab/animation state on recovery.
+- Built against the installed game and verified with 115 production-code checks and all four native Harmony patches. The affected player's mod combination still needs in-game validation; this is a conservative recovery fix, not proof of the original trigger.
+
 # Apocapocket 2.0.8
 
 - Keep explicit load-slot identity authoritative and prevent new games from reading the previous character's mapping.
