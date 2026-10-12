@@ -1,5 +1,24 @@
 # Implementation validation
 
+## 2.0.10 recovery while a joint is still lit
+
+12 October 2026: the reporting player's log confirms Apocapocket 2.0.9 loaded and contains no weapon watchdog recovery.
+The player clarified that weapons fail after a puff while the joint remains lit. The 2.0.9 guard incorrectly protected the
+whole on/smoke burn phase; native lighting instead ends by hiding both arms, while on/smoke continue burn/input/light control.
+
+173 production-code checks pass. Added cases cover all three smoking items in both on and smoke, with and without a stale
+animation flag; recovery preserves scale, light, smoking state, effect state, inventory and later native smoke transitions.
+Visible arms, a lighting FSM still in anim2, missing lighting logic, exhausted scale and unknown states remain protected.
+Additional cases cover a lost native weapon handler despite a present holder, native delay under slowed time, silent recovery
+with VerboseLog off, and throttled read-only snapshots of a grab pause with VerboseLog on. All existing fixtures pass.
+Unity Mono compilation and all four Harmony patches pass against the actual game assemblies; no installed plugin was changed.
+
+The original trigger in that player's mod combination is still not proven. Test 2.0.10 by lighting weed, waiting for the
+lighting animation to finish, taking a puff and drawing the same weapon while the joint is still lit. The joint should keep
+its progress/effects and Smoke input. If it still fails, enable Debug/VerboseLog, restart/reproduce, attempt a weapon draw and
+leave gameplay running for at least 15 seconds before copying LogOutput.log. This captures guard/state snapshots without
+normal-play log noise. Another mod's pause/foreign hand object is deliberately not cleared automatically.
+
 ## 2.0.9 smoking and weapon recovery
 
 12 October 2026: 115 checks pass against production code. New fixtures simulate long weed burning, lighting, inhaling,

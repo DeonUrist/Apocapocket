@@ -138,6 +138,7 @@ namespace Apocapocket
 
             // Poll early in Update; the prefix also captures presses if an FSM runs first.
             if (GameplayActive()) PollKeys();
+            else TraceBlockedInput();
             if (CurrentOp != null) Advance();
             else if (Borrow != null && !BorrowIntact()) BeginOperation(new Op { Kind = OpKind.RestoreBorrow, Target = -1 });
             else if (_queued != null && GameplayActive()) { var next = _queued; _queued = null; BeginOperation(next); }

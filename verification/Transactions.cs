@@ -20,6 +20,7 @@ internal static class Transactions
     {
         Resources.All.Clear(); Plugin.Enabled.Value = true; Plugin.RequireBackpack.Value = false;
         Plugin.HandledFrame = -100; Plugin.Log.Warnings.Clear();
+        Plugin.Verbose.Value = false; Plugin.Log.VerboseMessages.Clear();
         Keybinds.Pressed.Clear();
         Time.frameCount = 0; Time.unscaledTime = 0; Time.timeScale = 1; Camera.main = null;
         var r = new GameObject("Runner").AddComponent<Runner>();
@@ -194,6 +195,7 @@ internal static class Transactions
         foreach (string name in new[] { "Weed Anim", "Cigar Anim", "Cigarette Anim" })
         {
             var node = Child(root, name); var f = Fsm(node.gameObject, "Animation", "off");
+            Fsm(node.gameObject, "Anim", "idle");
             f.FsmVariables.Floats["scale"] = new FsmFloat { Value = 1f };
             Child(node, "arm_left").gameObject.SetActive(false); Child(node, "arm_right").gameObject.SetActive(false);
             if (name == "Weed Anim") weed = f;
@@ -223,12 +225,13 @@ internal static class Transactions
         weed.ActiveStateName = "End"; weed.transform.Find("arm_left").gameObject.SetActive(false);
         weed.FsmVariables.Floats["scale"].Value = 1f;
         r.Refs.Weapons.ActiveStateName = "useAid";
+        Plugin.Verbose.Value = true;
         Step(r, 600); Drain(r);
         Check(!flag.Value && r.Selected == 0 && r.Refs.Weapons.ActiveStateName == "Slot 1"
             && r.Slots[0].Content == gun && gun.transform.parent == r.Refs.Slots[0], "Completed weed cleanup permits stale flag recovery and normal weapon redraw");
         Check(weed.ActiveStateName == "End" && weed.FsmVariables.Floats["scale"].Value == 1f && effect.ActiveStateName == "on",
             "Recovery never replays smoking End or resets the weed effect");
-        Check(Plugin.Log.Warnings.Count(s => s.Contains("after item use:")) == 1, "Recovery records one state diagnostic");
+        Check(Plugin.Log.VerboseMessages.Count(s => s.Contains("after item use:")) == 1, "Recovery records one verbose state diagnostic");
 
         r = Create(); weed = AddAids(r, out flag); Put(r, 0, Item("stale-useAid", true)); Press(r, 0);
         r.Refs.Weapons.ActiveStateName = "useAid"; Step(r, 600); Drain(r);
@@ -268,7 +271,9 @@ internal static class Transactions
             var root = r.Refs.Grab.transform.Find("ItemAnim");
             var node = root.Find(name) ?? Child(root, name);
             var aid = Fsms.Find(node.gameObject, "Animation") ?? Fsm(node.gameObject, "Animation", "on");
-            aid.ActiveStateName = "on"; r.Refs.Weapons.ActiveStateName = "reEquip"; Step(r, 660);
+            aid.ActiveStateName = "on";
+            if (name == "Cigar Anim" || name == "Cigarette Anim") aid.transform.Find("arm_left").gameObject.SetActive(true);
+            r.Refs.Weapons.ActiveStateName = "reEquip"; Step(r, 660);
             Check(flag.Value && aid.ActiveStateName == "on" && Plugin.Log.Warnings.Count == 0, "Active " + name + " blocks all watchdog repairs");
         }
         r = Create(); weed = AddAids(r, out flag); Put(r, 0, Item("grenade-guard", true)); Press(r, 0); flag.Value = true;
@@ -295,13 +300,78 @@ internal static class Transactions
             if (gate == "disabled smoke") weed.enabled = false;
             if (gate == "modded wait") r.Refs.Weapons.FsmVariables.Floats["WaitReEquip"] = new FsmFloat { Value = float.NaN };
             Step(r, 660);
-            Check(flag.Value && !Plugin.Log.Warnings.Any(s => s.Contains("after item use:")), "Recovery respects " + gate);
+            Check(flag.Value && !Plugin.Log.VerboseMessages.Any(s => s.Contains("after item use:")), "Recovery respects " + gate);
             if (gate == "grab pause") Check(r.Refs.GrabPause.FsmVariables.GetFsmBool("GrabItem_Pause").Value, "Recovery never clears another system's pause flag");
         }
         // A legitimate native re-equip before the grace expires needs no intervention.
         r = Create(); weed = AddAids(r, out flag); Put(r, 0, Item("normal-aid", true)); Press(r, 0);
         r.Refs.Weapons.ActiveStateName = "useAid"; Step(r, 120); r.Refs.Weapons.Fsm.SetState("Slot 1"); Step(r, 600);
         Check(Plugin.Log.Warnings.Count == 0, "Normal native aid re-equip is left alone");
+    }
+
+    private static void LitSmokingRecovery()
+    {
+        foreach (string name in new[] { "Weed Anim", "Cigar Anim", "Cigarette Anim" })
+            foreach (string state in new[] { "on", "smoke" })
+                foreach (bool staleFlag in new[] { false, true })
+                {
+                    var r = Create(); FsmBool flag; AddAids(r, out flag);
+                    var smoke = Fsms.Find(r.Refs.Grab.transform.Find("ItemAnim/" + name).gameObject, "Animation");
+                    var gun = Item("lit-smoking-gun", true); Put(r, 0, gun); Press(r, 0);
+                    smoke.ActiveStateName = state; smoke.FsmVariables.Floats["scale"].Value = 0.45f;
+                    smoke.FsmVariables.Floats["light"] = new FsmFloat { Value = state == "smoke" ? 4f : 0.5f };
+                    var effect = Fsm(new GameObject("Weed_Effect"), "WeedEffect", "on");
+                    flag.Value = staleFlag; r.Refs.Weapons.ActiveStateName = "useAid";
+                    Step(r, 600); Drain(r);
+                    Check(!flag.Value && r.Refs.Weapons.ActiveStateName == "Slot 1" && r.Selected == 0 && r.Slots[0].Content == gun,
+                        name + " " + state + " allows stale weapon recovery after lighting (animBool=" + staleFlag + ")");
+                    Check(smoke.ActiveStateName == state && smoke.FsmVariables.Floats["scale"].Value == 0.45f
+                        && smoke.FsmVariables.Floats["light"].Value == (state == "smoke" ? 4f : 0.5f) && effect.ActiveStateName == "on",
+                        "Weapon recovery preserves lit joint progress, puff state, light and effects");
+                    Check(Plugin.Log.VerboseMessages.Count == 0 && Plugin.Log.Warnings.Count == 0, "Recovery is silent when VerboseLog is off");
+                    // Simulate the native input transition after recovery; the same FSM still owns smoking.
+                    smoke.ActiveStateName = state == "on" ? "smoke" : "on"; smoke.FsmVariables.Floats["scale"].Value = 0.4f;
+                    Step(r, 600);
+                    Check(smoke.FsmVariables.Floats["scale"].Value == 0.4f && effect.ActiveStateName == "on" && r.Selected == 0,
+                        "Native smoking transitions continue after recovery without another reset");
+                }
+
+        foreach (string incomplete in new[] { "arm visible", "lighting FSM", "missing lighting FSM", "exhausted scale", "unknown state" })
+        {
+            var r = Create(); FsmBool flag; var weed = AddAids(r, out flag); Put(r, 0, Item("protected-gun", true)); Press(r, 0);
+            weed.ActiveStateName = "smoke"; weed.FsmVariables.Floats["scale"].Value = 0.45f;
+            if (incomplete == "arm visible") weed.transform.Find("arm_right").gameObject.SetActive(true);
+            if (incomplete == "lighting FSM") Fsms.Find(weed.gameObject, "Anim").ActiveStateName = "anim2";
+            if (incomplete == "missing lighting FSM") Fsms.Find(weed.gameObject, "Anim").FsmName = "Other";
+            if (incomplete == "exhausted scale") weed.FsmVariables.Floats["scale"].Value = 0.19f;
+            if (incomplete == "unknown state") weed.ActiveStateName = "ModdedUnknownState";
+            flag.Value = true; r.Refs.Weapons.ActiveStateName = "reEquip"; Step(r, 600);
+            Check(flag.Value && r.Refs.Weapons.ActiveStateName == "reEquip", "Smoking protection remains conservative with " + incomplete);
+        }
+
+        var rr = Create(); FsmBool animationFlag; AddAids(rr, out animationFlag); Put(rr, 0, Item("lost-handler", true)); Press(rr, 0);
+        var handler = Fsm(rr.Refs.Weapons.gameObject, "WeaponInHand", "off");
+        var draw = rr.Refs.Weapons.OnState;
+        rr.Refs.Weapons.OnState = state => { draw(state); if (state.StartsWith("Slot ")) handler.ActiveStateName = "m16a1"; };
+        Step(rr, 600); Drain(rr);
+        Check(handler.ActiveStateName == "m16a1" && rr.Selected == 0 && rr.Slots[0].Content != null, "Stalled handler is recovered even when weapon prompts and holder remain present");
+
+        rr = Create(); AddAids(rr, out animationFlag); Put(rr, 0, Item("slow-time-gun", true)); Press(rr, 0);
+        rr.Refs.Weapons.FsmVariables.Floats["WaitReEquip"] = new FsmFloat { Value = 2.1f };
+        rr.Refs.Weapons.ActiveStateName = "useAid"; Time.timeScale = 0.25f;
+        Step(rr, 600);
+        Check(rr.Refs.Weapons.ActiveStateName == "useAid", "Recovery honours scaled native re-equip delay when time is slowed");
+        Step(rr, 360); Drain(rr);
+        Check(rr.Selected == 0 && rr.Refs.Weapons.ActiveStateName == "Slot 1", "Scaled-delay recovery completes after its grace period");
+
+        // Diagnostic snapshots cover guards without clearing them; all logging is opt-in.
+        rr = Create(); AddAids(rr, out animationFlag); Put(rr, 0, Item("diagnostic-gun", true)); Press(rr, 0);
+        rr.Refs.GrabPause = Fsm(new GameObject("__GameManager__"), "GrabItem_Pause", "pause");
+        rr.Refs.GrabPause.FsmVariables.Bools["GrabItem_Pause"] = new FsmBool { Value = true };
+        Plugin.Verbose.Value = true; Keybinds.Pressed.Add("Weapon 1"); Step(rr); Keybinds.Pressed.Clear(); Step(rr, 1800);
+        Check(Plugin.Log.VerboseMessages.Any(s => s.Contains("Weapon recovery snapshot:") && s.Contains("grabPause=True")), "Verbose snapshots identify another system's grab-pause guard");
+        Check(Plugin.Log.VerboseMessages.Count(s => s.StartsWith("Weapon recovery snapshot:")) <= 4
+            && rr.Refs.GrabPause.FsmVariables.GetFsmBool("GrabItem_Pause").Value, "Verbose diagnostics are throttled and read-only");
     }
 
     private static PlayMakerFSM SaveFsm(string file)
@@ -485,7 +555,7 @@ internal static class Transactions
         System.IO.Directory.CreateDirectory(ES3Settings.TestDirectory);
         try
         {
-            ItemsAndPause(); BorrowAndQueue(); DropThrowAndAid(); RollbackAndCustody(); PickupPolicy(); PickupsAndBackpacks(); SaveAndLoad(); SaveRegistryOrdering(); DelayedLoadAndSlotIdentity(); SmokingRecovery();
+            ItemsAndPause(); BorrowAndQueue(); DropThrowAndAid(); RollbackAndCustody(); PickupPolicy(); PickupsAndBackpacks(); SaveAndLoad(); SaveRegistryOrdering(); DelayedLoadAndSlotIdentity(); SmokingRecovery(); LitSmokingRecovery();
             Console.WriteLine("PASS: " + checks + " checks executing production inventory, transaction and persistence code with headless adapters.");
         }
         finally { System.IO.Directory.Delete(ES3Settings.TestDirectory, true); }

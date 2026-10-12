@@ -1,3 +1,12 @@
+# Apocapocket 2.0.10
+
+- Correct the 2.0.9 smoking guard for weapon lockups reported while a joint is still lit. Native `on`/`smoke` states permit weapon recovery once both smoking arms are hidden and the lighting FSM is idle; lighting, unknown states and incomplete cleanup remain protected.
+- Keep burn progress, puff input, lights, quantities, discarded items and weed effects under native control. Recovery never replays or rewrites the smoking FSM.
+- Detect a selected weapon whose native `WeaponInHand` handler remains off/deactivated/hands even when weapon prompts and a holder are present.
+- Honour slowed game time when waiting for the native re-equip delay.
+- Weapon recovery messages and bounded state snapshots now require `Debug/VerboseLog = true`. Snapshots include weapon/hand/animation states and pause/menu/vehicle/save/transaction guards, without clearing another mod's pause flag.
+- Verified with 173 production-code checks, native Mono compilation and all four Harmony patches. The reporting player's 2.0.9 log confirms loading but contains no recovery state; this corrects a confirmed guard gap and adds opt-in evidence for any remaining conflict.
+
 # Apocapocket 2.0.9
 
 - Guard every weapon-watchdog repair while native smoking, eating, drinking, binocular or grenade animations are active. Long weed/cigar/cigarette burn sessions remain untouched.

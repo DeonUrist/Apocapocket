@@ -166,16 +166,18 @@ namespace Apocapocket
     internal sealed class LogAdapter
     {
         public readonly List<string> Warnings = new List<string>();
+        public readonly List<string> VerboseMessages = new List<string>();
         public void LogWarning(object value) { Warnings.Add(value.ToString()); }
         public void LogInfo(object value) { }
     }
     internal static class Plugin
     {
         internal static ConfigValue<bool> Enabled = new ConfigValue<bool>(true), RequireBackpack = new ConfigValue<bool>(false);
+        internal static ConfigValue<bool> Verbose = new ConfigValue<bool>(false);
         internal static ConfigValue<string> Blacklist = new ConfigValue<string>("PartAdjusterTools;box_cardboard;crate_metal;crate_plastic");
         internal static LogAdapter Log = new LogAdapter();
         internal static int HandledFrame = -100;
-        internal static void V(string message) { }
+        internal static void V(string message) { if (Verbose.Value) Log.VerboseMessages.Add(message); }
     }
     internal class Refs
     {
