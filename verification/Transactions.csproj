@@ -6,6 +6,7 @@
     <Nullable>disable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../FsmAccess.cs" Link="FsmAccess.cs" />
     <Compile Include="../Inventory.cs" Link="Inventory.cs" />
     <Compile Include="../InventoryWorld.cs" Link="InventoryWorld.cs" />
     <Compile Include="../Persistence.cs" Link="Persistence.cs" />

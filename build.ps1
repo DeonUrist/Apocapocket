@@ -13,7 +13,7 @@ $arguments = @('-nostdlib', '-noconfig', '-target:library', '-langversion:7', '-
 $names = @('mscorlib', 'System', 'System.Core', 'netstandard', 'UnityEngine', 'UnityEngine.CoreModule', 'UnityEngine.PhysicsModule', 'UnityEngine.AudioModule', 'UnityEngine.InputLegacyModule', 'Unity.InputSystem', 'UnityEngine.ImageConversionModule', 'UnityEngine.JSONSerializeModule', 'UnityEngine.UI', 'UnityEngine.UIModule', 'UnityEngine.TextRenderingModule', 'PlayMaker', 'Assembly-CSharp', 'Assembly-CSharp-firstpass')
 foreach ($name in $names) { $arguments += '-r:' + (Join-Path $managed ($name + '.dll')) }
 foreach ($name in @('BepInEx', '0Harmony')) { $arguments += '-r:' + (Join-Path $core ($name + '.dll')) }
-$arguments += @('Plugin.cs', 'Inventory.cs', 'InventoryWorld.cs', 'Watchdog.cs', 'InputPatches.cs', 'Persistence.cs', 'Icons.cs', 'ExtraSlots.cs', 'ExtendedCardGraphic.cs', 'Keybinds.cs') | ForEach-Object { Join-Path $PSScriptRoot $_ }
+$arguments += @('Plugin.cs', 'FsmAccess.cs', 'Inventory.cs', 'InventoryWorld.cs', 'Watchdog.cs', 'InputPatches.cs', 'Persistence.cs', 'Icons.cs', 'ExtraSlots.cs', 'ExtendedCardGraphic.cs', 'Keybinds.cs') | ForEach-Object { Join-Path $PSScriptRoot $_ }
 & $runtime $compiler @arguments
 if ($LASTEXITCODE -ne 0) { throw "mcs failed ($LASTEXITCODE)" }
 if ($Deploy) {

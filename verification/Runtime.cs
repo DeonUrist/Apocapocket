@@ -144,7 +144,8 @@ namespace HutongGames.PlayMaker
     {
         public bool Initialized = true, RestartOnEnable = true;
         public PlayMakerFSM Owner;
-        public string Name { get { return Owner.FsmName; } }
+        public string Name;
+        public FsmVariables Variables = new FsmVariables();
         public UnityEngine.GameObject GameObject { get { return Owner.gameObject; } }
         public PlayMakerFSM FsmComponent { get { return Owner; } }
         public void SetState(string state) { Owner.ActiveStateName = state; if (Owner.OnState != null) Owner.OnState(state); }
@@ -154,9 +155,11 @@ namespace HutongGames.PlayMaker
 }
 public class PlayMakerFSM : UnityEngine.Behaviour
 {
-    public string FsmName, ActiveStateName = "off";
+    // Match the game: metadata access on a component with no internal FSM throws.
+    public string FsmName { get { return Fsm.Name; } set { Fsm.Name = value; } }
+    public string ActiveStateName = "off";
     public HutongGames.PlayMaker.Fsm Fsm = new HutongGames.PlayMaker.Fsm();
-    public HutongGames.PlayMaker.FsmVariables FsmVariables = new HutongGames.PlayMaker.FsmVariables();
+    public HutongGames.PlayMaker.FsmVariables FsmVariables { get { return Fsm.Variables; } }
     public Action<string> OnState, OnEvent;
     public void SendEvent(string ev) { if (OnEvent != null) OnEvent(ev); }
 }
@@ -179,22 +182,10 @@ namespace Apocapocket
         internal static int HandledFrame = -100;
         internal static void V(string message) { if (Verbose.Value) Log.VerboseMessages.Add(message); }
     }
-    internal class Refs
-    {
-        internal PlayMakerFSM Grab, Weapons, Menu, GrabPause, InCar;
-        internal UnityEngine.Transform Hand, HandItemUse;
-        internal UnityEngine.Transform[] Slots = new UnityEngine.Transform[6];
-        internal bool Valid { get { return Grab != null && Weapons != null && Hand != null && HandItemUse != null && Slots.All(t => t != null); } }
-        internal static Refs Find() { return Runner.Instance.Refs; }
-    }
-    internal static class Fsms
-    {
-        internal static PlayMakerFSM Find(UnityEngine.GameObject go, string name) { return go == null ? null : go.GetComponents<PlayMakerFSM>().FirstOrDefault(f => f.FsmName == name); }
-    }
     internal static class RestartGuard
     {
         internal static void Set(UnityEngine.GameObject item, bool guarded)
-        { if (item != null) foreach (var f in item.GetComponents<PlayMakerFSM>()) if (f.FsmName == "CheckTag" || f.FsmName == "LockPhysics") f.Fsm.RestartOnEnable = !guarded; }
+        { if (item != null) foreach (var f in item.GetComponents<PlayMakerFSM>()) if (f.Fsm != null && (f.FsmName == "CheckTag" || f.FsmName == "LockPhysics")) f.Fsm.RestartOnEnable = !guarded; }
     }
     internal static class ApocasaverBridge
     {
@@ -217,6 +208,20 @@ namespace Apocapocket
     }
     internal static class ExtraSlots
     {
+        internal const int Max = 3;
+        internal static UnityEngine.Transform[] Holders = new UnityEngine.Transform[Max];
+        internal static void EnsureHolders(UnityEngine.Transform camera)
+        {
+            for (int i = 0; i < Max; i++)
+            {
+                Holders[i] = camera.Find("Slot " + (i + 4));
+                if (Holders[i] == null)
+                {
+                    Holders[i] = new UnityEngine.GameObject("Slot " + (i + 4)).transform;
+                    Holders[i].SetParent(camera, false);
+                }
+            }
+        }
         internal static int Unlocked = 3;
         internal static int Active { get { return Unlocked; } }
         internal static UnityEngine.Transform Staging;

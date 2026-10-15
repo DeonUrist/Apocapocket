@@ -68,7 +68,7 @@ namespace Apocapocket
         internal Borrow Borrow;
         internal Refs Refs;
         internal int Unlocked { get { return 3 + ExtraSlots.Active; } }
-        internal bool Ready { get { return Refs != null && Refs.Valid && Refs.Weapons.Fsm.Initialized && Refs.Grab.Fsm.Initialized; } }
+        internal bool Ready { get { return Refs != null && Refs.Valid && Refs.Weapons.Fsm != null && Refs.Grab.Fsm != null && Refs.Weapons.Fsm.Initialized && Refs.Grab.Fsm.Initialized; } }
         private Op _queued;
         private int _handOrigin = -1;
         private string _handName;

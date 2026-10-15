@@ -549,13 +549,75 @@ internal static class Transactions
         Check(r.Slots[5].Content == null && radio.transform.parent == null, "Stable backpack removal ejects overflow");
     }
 
+    private static PlayMakerFSM MalformedFsm(GameObject go)
+    {
+        var broken = go.AddComponent<PlayMakerFSM>();
+        broken.Fsm = null;
+        // Put it before valid scene components, so scans cannot pass by finding their target first.
+        Resources.All.Remove(broken); Resources.All.Insert(0, broken);
+        return broken;
+    }
+
+    private static void NullFsmCompatibility()
+    {
+        var r = Create();
+        var helper = new GameObject("WeaponsPack.Request.Chainsaw"); helper.SetActive(false);
+        var broken = MalformedFsm(helper);
+        bool threw = false;
+        try { var name = broken.FsmName; } catch (NullReferenceException) { threw = true; }
+        Check(threw, "Null-FSM fixture reproduces the game's throwing FsmName getter");
+        var found = Refs.Find();
+        Check(found.Valid && found.Grab == r.Refs.Grab && found.Weapons == r.Refs.Weapons,
+            "Production reference discovery skips an incomplete inactive component");
+        Check(Fsms.Find(helper, "ItemName") == null, "Production component lookup skips a null internal FSM");
+        var valid = Fsm(helper, "ItemName"); valid.enabled = false; valid.Fsm.Initialized = false;
+        Check(Fsms.Find(helper, "ItemName") == valid, "Valid inactive and not-yet-running metadata remains discoverable");
+
+        var item = Item("null-fsm-test-item");
+        var child = Child(item.transform, "incomplete-child"); MalformedFsm(child.gameObject);
+        Check(r.CanPocket(item), "Incomplete child metadata does not throw during the container scan");
+        Fsm(child.gameObject, "saveItemVar");
+        Check(!r.CanPocket(item), "A real saveable child still blocks pocketing");
+        Plugin.Log.Warnings.Clear();
+
+        var save = SaveFsm("NullFsm.es3");
+        var registry = Fsm(new GameObject("NewGO_ArrayList"), "Save_NewGO_ArrayList");
+        registry.FsmVariables.Strings["SaveFile"] = new FsmString { Value = "NullFsm.es3" };
+        MalformedFsm(registry.gameObject);
+        var radio = Item("null-fsm-radio"); Put(r, 3, radio);
+        // Exercise global save-FSM discovery and the save-path fallback with malformed components first.
+        ES3Settings.defaultSettings.path = "";
+        r.Save.Tick(r);
+        save.ActiveStateName = "wait";
+        r.Save.OnState(r, save.Fsm, "wait");
+        Check(r.Save.Normalised && radio.transform.parent == null, "Save begins and normalizes inventory despite null-FSM metadata");
+        save.ActiveStateName = "isPlay"; r.Save.OnState(r, save.Fsm, "isPlay");
+        Check(r.Save.Normalised, "Malformed metadata never bypasses waiting for the real registry flush");
+        r.Save.OnState(r, registry.Fsm, "store cached file"); ES3.Flush("NullFsm.es3");
+        r.Save.AfterState(r, registry.Fsm, "store cached file"); Step(r, 70);
+        Check(!r.Save.Busy && radio.transform.parent == r.Refs.Slots[3], "Inventory returns after the real registry flush");
+        Check(ES3.KeyExists(Persistence.Key, new ES3Settings("NullFsm.es3") { location = ES3.Location.File }),
+            "Mapping is persisted to the registry's save slot with malformed components present");
+        Check(Plugin.Log.Warnings.Count == 0, "Null-FSM save and verification produce no inventory exceptions");
+
+        r = Create(); Put(r, 0, Item("safe-gun", true));
+        FsmBool flag; var smoke = AddAids(r, out flag);
+        MalformedFsm(smoke.transform.parent.gameObject);
+        Press(r, 0); flag.Value = true; r.Refs.Weapons.ActiveStateName = "useAid";
+        Step(r, 700);
+        Check(flag.Value && r.Refs.Weapons.ActiveStateName == "useAid" && Plugin.Log.Warnings.Count == 0,
+            "Incomplete animation metadata blocks recovery without throwing or clearing native flags");
+        var grab = r.Refs.Grab; grab.Fsm = null;
+        Check(!r.Ready, "A missing internal player FSM makes the runner unready without throwing");
+    }
+
     public static void Main()
     {
         ES3Settings.TestDirectory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "Apocapocket-tests-" + Guid.NewGuid().ToString("N"));
         System.IO.Directory.CreateDirectory(ES3Settings.TestDirectory);
         try
         {
-            ItemsAndPause(); BorrowAndQueue(); DropThrowAndAid(); RollbackAndCustody(); PickupPolicy(); PickupsAndBackpacks(); SaveAndLoad(); SaveRegistryOrdering(); DelayedLoadAndSlotIdentity(); SmokingRecovery(); LitSmokingRecovery();
+            ItemsAndPause(); BorrowAndQueue(); DropThrowAndAid(); RollbackAndCustody(); PickupPolicy(); PickupsAndBackpacks(); SaveAndLoad(); SaveRegistryOrdering(); DelayedLoadAndSlotIdentity(); SmokingRecovery(); LitSmokingRecovery(); NullFsmCompatibility();
             Console.WriteLine("PASS: " + checks + " checks executing production inventory, transaction and persistence code with headless adapters.");
         }
         finally { System.IO.Directory.Delete(ES3Settings.TestDirectory, true); }

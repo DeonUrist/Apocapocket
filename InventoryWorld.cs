@@ -216,7 +216,7 @@ namespace Apocapocket
             var fb = Fsms.Find(item, "ForBuy");
             if (fb != null) { var v = fb.FsmVariables.GetFsmInt("ForBuyInt"); if (v != null && v.Value == 1) reason = "merchant stock"; }
             foreach (var f in item.GetComponentsInChildren<PlayMakerFSM>(true))
-                if (f.transform != item.transform && (f.FsmName == "saveItemVar" || f.FsmName == "ItemName")) { reason = "contains a saveable item"; break; }
+                if (f != null && f.Fsm != null && f.transform != item.transform && (f.FsmName == "saveItemVar" || f.FsmName == "ItemName")) { reason = "contains a saveable item"; break; }
             if (reason == null) return true;
             if (_refused.Add(item.name)) Plugin.Log.LogWarning("Refused " + item.name + ": " + reason);
             return false;
@@ -419,7 +419,7 @@ namespace Apocapocket
             {
                 _camAt = Time.unscaledTime + 0.5f;
                 foreach (var f in Resources.FindObjectsOfTypeAll<PlayMakerFSM>())
-                    if (f != null && f.enabled && f.FsmName == "Camera" && f.gameObject.name == "DriveTrigger" && f.gameObject.scene.IsValid() && f.gameObject.activeInHierarchy) { _vehicleCam = f; break; }
+                    if (f != null && f.Fsm != null && f.enabled && f.FsmName == "Camera" && f.gameObject.name == "DriveTrigger" && f.gameObject.scene.IsValid() && f.gameObject.activeInHierarchy) { _vehicleCam = f; break; }
             }
             if (State(_vehicleCam).StartsWith("3", StringComparison.Ordinal)) return true;
             var camera = Refs.Grab.GetComponent<Camera>();

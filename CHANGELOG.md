@@ -1,3 +1,10 @@
+# Apocapocket 2.0.11 (local compatibility fix)
+
+- Skip PlayMaker components whose internal `Fsm` is null before reading their names, variables or states. This covers player reference discovery, save registry and save-path scans, item lookup, container checks, vehicle camera scans and animation diagnostics.
+- Keep valid inactive metadata discoverable. Incomplete item animation metadata cannot prove that animations are idle and therefore does not trigger weapon recovery.
+- Move the existing reference and lookup helpers to `FsmAccess.cs` so the verification harness executes the production discovery code. Match the game's throwing metadata getters in the headless adapter.
+- Verified with 186 production-code checks, including malformed components before valid save targets, native Mono compilation and all four Harmony patches. This guards a confirmed exception path; it does not establish the reporting player's full save-hang cause.
+
 # Apocapocket 2.0.10
 
 - Correct the 2.0.9 smoking guard for weapon lockups reported while a joint is still lit. Native `on`/`smoke` states permit weapon recovery once both smoking arms are hidden and the lighting FSM is idle; lighting, unknown states and incomplete cleanup remain protected.

@@ -1,4 +1,4 @@
-# Apocapocket 2.0.10
+# Apocapocket 2.0.11
 
 Six item and weapon slots for Apocalypter (Unity 2020.3, BepInEx 5, PlayMaker).
 

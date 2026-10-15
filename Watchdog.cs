@@ -178,7 +178,10 @@ namespace Apocapocket
             int smokers = 0;
             foreach (var f in root.GetComponentsInChildren<PlayMakerFSM>(true))
             {
-                if (f == null || f.FsmName != "Animation") continue;
+                if (f == null) continue;
+                // An incomplete component cannot prove that native item animations are idle.
+                if (f.Fsm == null) { known = false; continue; }
+                if (f.FsmName != "Animation") continue;
                 bool smoke = f.gameObject.name == "Weed Anim" || f.gameObject.name == "Cigar Anim" || f.gameObject.name == "Cigarette Anim";
                 if (smoke) smokers++;
                 else if (!f.gameObject.activeInHierarchy || !f.enabled) continue;
@@ -248,7 +251,7 @@ namespace Apocapocket
             string aids = "";
             if (root != null)
                 foreach (var f in root.GetComponentsInChildren<PlayMakerFSM>(true))
-                    if (f != null && f.FsmName == "Animation") aids += " " + f.gameObject.name + "=" + State(f);
+                    if (f != null && f.Fsm != null && f.FsmName == "Animation") aids += " " + f.gameObject.name + "=" + State(f);
             var flag = root != null ? Fsms.Find(root.gameObject, "animBool") : null;
             var value = flag != null ? flag.FsmVariables.GetFsmBool("animBool") : null;
             var pause = Refs.GrabPause != null ? Refs.GrabPause.FsmVariables.GetFsmBool("GrabItem_Pause") : null;

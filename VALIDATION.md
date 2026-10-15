@@ -98,3 +98,8 @@ Fixed holder reference IDs are retained only to resolve 1.x saves. Runtime stagi
 The vanilla save cache may preserve unknown mod keys when saving without a DLL. The mapping therefore records the saved `SaveLoadGame.Timeline` value and ignores a mapping whose saved clock differs from the loaded vanilla clock. An absent-mod re-save with an exactly unchanged saved clock cannot be distinguished by this check; that edge case needs observation in the real game. The original unmodified save retains its mapping.
 
 Hand-carried items remain under vanilla/Apocasaver save handling. Slot poses are persisted independently of Apocasaver. Item renderer/collider enable sets are captured from the visible loaded item when reconstructing the inventory.
+# Local 2.0.11 null-FSM compatibility verification (2026-10-16)
+
+`verify.ps1` passes 186 production-code checks, compilation with the game's Mono compiler and all four native Harmony patches. New regressions inject inactive PlayMaker components whose internal `Fsm` is null, ahead of valid components in resource scans. The adapter's `FsmName` and `FsmVariables` getters now dereference that internal FSM as the game does, so an omitted guard throws instead of being hidden by a test-only field.
+
+Coverage includes real production reference discovery and component lookup, valid inactive metadata, container scans, save-FSM discovery, registry/path fallback, normalization until the actual registry flush, mapping persistence, conservative animation recovery and readiness checks. The existing `Refs`/`Fsms` helpers were moved to `FsmAccess.cs` for direct execution by the harness. No player saves were changed. The reporting player's full mod combination has not been tested in game.

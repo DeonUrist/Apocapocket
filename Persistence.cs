@@ -81,7 +81,7 @@ namespace Apocapocket
         {
             if (_fsm == null)
                 foreach (var f in Resources.FindObjectsOfTypeAll<PlayMakerFSM>())
-                    if (f != null && f.FsmName == "SaveLoadGame" && f.gameObject.scene.IsValid()) { _fsm = f; break; }
+                    if (f != null && f.Fsm != null && f.FsmName == "SaveLoadGame" && f.gameObject.scene.IsValid()) { _fsm = f; break; }
             string state = Runner.State(_fsm);
             if ((state == "wait" || state == "SaveGame") && !_saving) BeginSave(run);
             if (_saving && state == "isPlay" && (!_waitForRegistry || _cacheFlushed)) EndSave(run);
@@ -178,7 +178,7 @@ namespace Apocapocket
             _saving = true; Normalised = true; _deadline = Time.unscaledTime + 60f;
             _waitForRegistry = false; _cacheFlushed = false;
             foreach (var f in Resources.FindObjectsOfTypeAll<PlayMakerFSM>())
-                if (f != null && f.FsmName == "Save_NewGO_ArrayList" && f.gameObject.scene.IsValid()) { _waitForRegistry = true; break; }
+                if (f != null && f.Fsm != null && f.FsmName == "Save_NewGO_ArrayList" && f.gameObject.scene.IsValid()) { _waitForRegistry = true; break; }
             _file = CurrentFile(); _writeTries = 0;
             var entries = new List<string>();
             for (int i = 0; i < 6; i++)
@@ -318,9 +318,9 @@ namespace Apocapocket
             var list = new List<string>();
             // During load, NewGO_ArrayList is the slot selected by the load button; SaveLoadGame may still be stale.
             foreach (var f in Resources.FindObjectsOfTypeAll<PlayMakerFSM>())
-                if (f != null && f.gameObject.scene.IsValid() && f.gameObject.name == "NewGO_ArrayList")
+                if (f != null && f.Fsm != null && f.gameObject.scene.IsValid() && f.gameObject.name == "NewGO_ArrayList")
                 { var v = f.FsmVariables.GetFsmString("SaveFile"); if (v != null && !string.IsNullOrEmpty(v.Value) && !list.Contains(v.Value)) list.Add(v.Value); }
-            var sv = _fsm != null ? _fsm.FsmVariables.GetFsmString("SaveFile") : null;
+            var sv = _fsm != null && _fsm.Fsm != null ? _fsm.FsmVariables.GetFsmString("SaveFile") : null;
             if (sv != null && !string.IsNullOrEmpty(sv.Value) && !list.Contains(sv.Value)) list.Add(sv.Value);
             var path = ES3Settings.defaultSettings.path;
             if (!string.IsNullOrEmpty(path) && !list.Contains(path)) list.Add(path);
@@ -361,7 +361,7 @@ namespace Apocapocket
 
         private void StampTimeline()
         {
-            if (_json == null || _fsm == null) return;
+            if (_json == null || _fsm == null || _fsm.Fsm == null) return;
             var timeline = _fsm.FsmVariables.GetFsmFloat("Timeline");
             if (timeline == null) return;
             var map = JsonUtility.FromJson<SaveMap>(_json);
